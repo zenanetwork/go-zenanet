@@ -21,10 +21,10 @@ import (
 	"sync"
 
 	"github.com/crate-crypto/go-ipa/bandersnatch/fr"
+	"github.com/ethereum/go-verkle"
+	"github.com/holiman/uint256"
 	"github.com/zenanetwork/go-zenanet/common/lru"
 	"github.com/zenanetwork/go-zenanet/metrics"
-	"github.com/zenanetwork/go-verkle"
-	"github.com/holiman/uint256"
 )
 
 const (

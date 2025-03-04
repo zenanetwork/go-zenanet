@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-verkle"
 	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/core/rawdb"
 	"github.com/zenanetwork/go-zenanet/core/types"
@@ -31,7 +32,6 @@ import (
 	"github.com/zenanetwork/go-zenanet/log"
 	"github.com/zenanetwork/go-zenanet/params"
 	"github.com/zenanetwork/go-zenanet/trie/trienode"
-	"github.com/zenanetwork/go-verkle"
 )
 
 const (

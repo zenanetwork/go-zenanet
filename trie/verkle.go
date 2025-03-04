@@ -22,14 +22,14 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ethereum/go-verkle"
+	"github.com/holiman/uint256"
 	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/core/types"
 	"github.com/zenanetwork/go-zenanet/ethdb"
 	"github.com/zenanetwork/go-zenanet/trie/trienode"
 	"github.com/zenanetwork/go-zenanet/trie/utils"
 	"github.com/zenanetwork/go-zenanet/triedb/database"
-	"github.com/zenanetwork/go-verkle"
-	"github.com/holiman/uint256"
 )
 
 var (

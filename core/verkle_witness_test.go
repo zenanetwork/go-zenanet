@@ -24,6 +24,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/ethereum/go-verkle"
+	"github.com/holiman/uint256"
 	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/consensus/beacon"
 	"github.com/zenanetwork/go-zenanet/consensus/ethash"
@@ -36,8 +38,6 @@ import (
 	"github.com/zenanetwork/go-zenanet/params"
 	"github.com/zenanetwork/go-zenanet/trie/utils"
 	"github.com/zenanetwork/go-zenanet/triedb"
-	"github.com/zenanetwork/go-verkle"
-	"github.com/holiman/uint256"
 )
 
 var (

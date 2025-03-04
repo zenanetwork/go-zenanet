@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/ethereum/go-verkle"
+	"github.com/holiman/uint256"
 	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/consensus"
 	"github.com/zenanetwork/go-zenanet/consensus/misc"
@@ -32,8 +34,6 @@ import (
 	"github.com/zenanetwork/go-zenanet/ethdb"
 	"github.com/zenanetwork/go-zenanet/params"
 	"github.com/zenanetwork/go-zenanet/triedb"
-	"github.com/zenanetwork/go-verkle"
-	"github.com/holiman/uint256"
 )
 
 // BlockGen creates blocks for testing.
