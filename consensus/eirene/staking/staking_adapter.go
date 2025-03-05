@@ -312,7 +312,17 @@ func (a *StakingAdapter) Redelegate(state *state.StateDB, delegator common.Addre
 	}
 
 	// 소스 위임 확인
-	srcDelegation, exists := srcValidatorInfo.Delegations[delegator]
+	var srcDelegation *ValidatorDelegation
+	exists := false
+	
+	for _, del := range srcValidatorInfo.Delegations {
+		if del.Delegator == delegator {
+			srcDelegation = del
+			exists = true
+			break
+		}
+	}
+	
 	if !exists {
 		return fmt.Errorf("delegation not found for delegator %s and validator %s", delegator.Hex(), srcValidator.Hex())
 	}
@@ -341,7 +351,17 @@ func (a *StakingAdapter) Redelegate(state *state.StateDB, delegator common.Addre
 	}
 
 	// 대상 위임 확인
-	dstDelegation, exists := dstValidatorInfo.Delegations[delegator]
+	var dstDelegation *ValidatorDelegation
+	exists = false
+	
+	for _, del := range dstValidatorInfo.Delegations {
+		if del.Delegator == delegator {
+			dstDelegation = del
+			exists = true
+			break
+		}
+	}
+	
 	if exists {
 		// 기존 위임에 추가
 		dstDelegation.Amount = new(big.Int).Add(dstDelegation.Amount, amount)
@@ -420,8 +440,10 @@ func (a *StakingAdapter) GetDelegations(delegator common.Address) ([]*ValidatorD
 
 	// 모든 검증자의 위임 확인
 	for _, v := range validators {
-		if delegation, exists := v.Delegations[delegator]; exists {
-			delegations = append(delegations, delegation)
+		for _, delegation := range v.Delegations {
+			if delegation.Delegator == delegator {
+				delegations = append(delegations, delegation)
+			}
 		}
 	}
 
