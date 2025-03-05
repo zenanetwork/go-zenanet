@@ -14,17 +14,21 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-zenanet library. If not, see <http://www.gnu.org/licenses/>.
 
+// Package core는 Eirene 합의 알고리즘의 핵심 기능을 구현합니다.
 package core
 
 import (
 	"math/big"
+	"time"
 
 	"github.com/zenanetwork/go-zenanet/common"
+	"github.com/zenanetwork/go-zenanet/consensus/eirene/utils"
 	"github.com/zenanetwork/go-zenanet/core/types"
 	"github.com/zenanetwork/go-zenanet/ethdb"
 )
 
-// 거버넌스 관련 타입
+// GovernanceState는 거버넌스 시스템의 상태를 관리하는 구조체입니다.
+// 이 구조체는 제안, 투표, 거버넌스 매개변수 등을 관리합니다.
 type GovernanceState struct {
 	Proposals       map[uint64]*Proposal              // 제안 ID -> 제안
 	Votes           map[uint64]map[common.Address]int // 제안 ID -> 투표자 -> 투표 옵션
@@ -34,25 +38,57 @@ type GovernanceState struct {
 	PassThreshold   uint64                            // 통과 임계값 (%)
 }
 
+// store는 거버넌스 상태를 데이터베이스에 저장합니다.
+//
+// 매개변수:
+//   - db: 상태를 저장할 데이터베이스
+//
+// 반환값:
+//   - error: 오류 발생 시 반환
 func (gs *GovernanceState) store(db ethdb.Database) error {
 	return nil
 }
 
+// submitProposal은 새로운 제안을 제출합니다.
+//
+// 매개변수:
+//   - proposer: 제안자 주소
+//   - title: 제안 제목
+//   - description: 제안 설명
+//   - proposalType: 제안 유형 (텍스트, 매개변수 변경, 업그레이드, 자금 지원)
+//   - parameters: 매개변수 변경 제안의 경우 변경할 매개변수 맵
+//   - upgrade: 업그레이드 제안의 경우 업그레이드 정보
+//   - funding: 자금 지원 제안의 경우 자금 지원 정보
+//   - deposit: 제안 보증금
+//
+// 반환값:
+//   - uint64: 생성된 제안 ID
+//   - error: 오류 발생 시 반환
 func (gs *GovernanceState) submitProposal(
 	proposer common.Address,
 	title string,
 	description string,
-	proposalType uint8,
+	proposalType string,
 	parameters map[string]string,
-	upgrade *UpgradeInfo,
-	funding *FundingInfo,
+	upgrade *utils.UpgradeInfo,
+	funding *utils.FundingInfo,
 	deposit *big.Int,
-	currentBlock uint64,
 ) (uint64, error) {
 	// 구현
 	return 0, nil
 }
 
+// vote는 제안에 투표합니다.
+//
+// 매개변수:
+//   - proposalID: 투표할 제안 ID
+//   - voter: 투표자 주소
+//   - option: 투표 옵션 (0: 찬성, 1: 반대, 2: 기권, 3: 거부권)
+//   - weight: 투표 가중치
+//   - currentBlock: 현재 블록 번호
+//
+// 반환값:
+//   - error: 오류 발생 시 반환 (투표 기간이 아닌 경우, 이미 투표한 경우 등)
 func (gs *GovernanceState) vote(
 	proposalID uint64,
 	voter common.Address,
@@ -64,29 +100,62 @@ func (gs *GovernanceState) vote(
 	return nil
 }
 
+// processProposals는 현재 블록에서 처리해야 할 제안을 처리합니다.
+//
+// 매개변수:
+//   - currentBlock: 현재 블록 번호
 func (gs *GovernanceState) processProposals(currentBlock uint64) {
 	// 구현
 }
 
+// getProposal은 지정된 ID의 제안을 반환합니다.
+//
+// 매개변수:
+//   - proposalID: 조회할 제안 ID
+//
+// 반환값:
+//   - *Proposal: 제안 정보
+//   - error: 오류 발생 시 반환 (제안이 존재하지 않는 경우 등)
 func (gs *GovernanceState) getProposal(proposalID uint64) (*Proposal, error) {
 	// 구현
 	return nil, nil
 }
 
+// executeProposal은 통과된 제안을 실행합니다.
+//
+// 매개변수:
+//   - proposalID: 실행할 제안 ID
+//   - currentBlock: 현재 블록 번호
 func (gs *GovernanceState) executeProposal(proposalID uint64, currentBlock uint64) {
 	// 구현
 }
 
+// getAllProposals는 모든 제안 목록을 반환합니다.
+//
+// 반환값:
+//   - []*Proposal: 모든 제안 목록
 func (gs *GovernanceState) getAllProposals() []*Proposal {
 	// 구현
 	return nil
 }
 
+// getVotes는 지정된 제안에 대한 모든 투표를 반환합니다.
+//
+// 매개변수:
+//   - proposalID: 조회할 제안 ID
+//
+// 반환값:
+//   - []ProposalVote: 투표 목록
+//   - error: 오류 발생 시 반환 (제안이 존재하지 않는 경우 등)
 func (gs *GovernanceState) getVotes(proposalID uint64) ([]ProposalVote, error) {
 	// 구현
 	return nil, nil
 }
 
+// getGovernanceParams는 현재 거버넌스 매개변수를 반환합니다.
+//
+// 반환값:
+//   - map[string]interface{}: 거버넌스 매개변수 맵
 func (gs *GovernanceState) getGovernanceParams() map[string]interface{} {
 	// 구현
 	return nil
@@ -413,27 +482,67 @@ type FundingInfo struct {
 	Purpose   string         // 목적
 }
 
+// Proposal은 거버넌스 제안을 나타냅니다.
 type Proposal struct {
-	// 필요한 필드
-	ID           uint64            // 제안 ID
-	Title        string            // 제목
-	Description  string            // 설명
-	Type         uint8             // 제안 유형
-	Status       uint8             // 제안 상태
-	Proposer     common.Address    // 제안자
-	SubmitBlock  uint64            // 제출 블록
-	VotingStart  uint64            // 투표 시작 블록
-	VotingEnd    uint64            // 투표 종료 블록
-	ExecuteBlock uint64            // 실행 블록
-	Deposit      *big.Int          // 보증금
-	Parameters   map[string]string // 매개변수 변경 제안의 경우
-	Upgrade      *UpgradeInfo      // 업그레이드 제안의 경우
-	Funding      *FundingInfo      // 자금 지원 제안의 경우
-	TotalVotes   uint64            // 총 투표 수
-	YesVotes     uint64            // 찬성 투표 수
-	NoVotes      uint64            // 반대 투표 수
-	AbstainVotes uint64            // 기권 투표 수
-	VetoVotes    uint64            // 거부권 투표 수
+	ID               uint64                 // 제안 ID
+	Title            string                 // 제안 제목
+	Description      string                 // 제안 설명
+	Type             string                 // 제안 유형
+	Status           string                 // 제안 상태
+	Proposer         common.Address         // 제안자 주소
+	SubmitBlock      uint64                 // 제출 블록
+	DepositEndBlock  uint64                 // 보증금 종료 블록
+	VotingStartBlock uint64                 // 투표 시작 블록
+	VotingEndBlock   uint64                 // 투표 종료 블록
+	ExecuteBlock     uint64                 // 실행 블록
+	Deposit          *big.Int               // 보증금
+	Parameters       map[string]string      // 매개변수 (매개변수 변경 제안용)
+	Upgrade          *utils.UpgradeInfo     // 업그레이드 정보 (업그레이드 제안용)
+	Funding          *utils.FundingInfo     // 자금 지원 정보 (자금 지원 제안용)
+	YesVotes         *big.Int               // 찬성 투표 수
+	NoVotes          *big.Int               // 반대 투표 수
+	AbstainVotes     *big.Int               // 기권 투표 수
+	VetoVotes        *big.Int               // 거부권 투표 수
+}
+
+// GetID는 제안 ID를 반환합니다.
+func (p *Proposal) GetID() uint64 {
+	return p.ID
+}
+
+// GetType은 제안 유형을 반환합니다.
+func (p *Proposal) GetType() string {
+	return p.Type
+}
+
+// GetTitle은 제안 제목을 반환합니다.
+func (p *Proposal) GetTitle() string {
+	return p.Title
+}
+
+// GetDescription은 제안 설명을 반환합니다.
+func (p *Proposal) GetDescription() string {
+	return p.Description
+}
+
+// GetProposer는 제안자 주소를 반환합니다.
+func (p *Proposal) GetProposer() common.Address {
+	return p.Proposer
+}
+
+// GetStatus는 제안 상태를 반환합니다.
+func (p *Proposal) GetStatus() string {
+	return p.Status
+}
+
+// GetVotingStartBlock은 투표 시작 블록을 반환합니다.
+func (p *Proposal) GetVotingStartBlock() uint64 {
+	return p.VotingStartBlock
+}
+
+// GetVotingEndBlock은 투표 종료 블록을 반환합니다.
+func (p *Proposal) GetVotingEndBlock() uint64 {
+	return p.VotingEndBlock
 }
 
 type ProposalVote struct {
@@ -490,4 +599,12 @@ func (p *IBCPacket) GetDestPort() string {
 
 func (p *IBCPacket) GetDestChannel() string {
 	return p.DestinationChannel
+}
+
+// UpgradeEvent는 업그레이드 이벤트를 나타냅니다.
+type UpgradeEvent struct {
+	Name        string    // 업그레이드 이름
+	Height      uint64    // 업그레이드 높이
+	Info        string    // 업그레이드 정보
+	UpgradeTime time.Time // 업그레이드 시간
 }

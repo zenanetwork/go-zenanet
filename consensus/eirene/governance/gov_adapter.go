@@ -23,7 +23,7 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/zenanetwork/go-zenanet/common"
-	core "github.com/zenanetwork/go-zenanet/consensus/eirene/core"
+	"github.com/zenanetwork/go-zenanet/consensus/eirene/utils"
 	"github.com/zenanetwork/go-zenanet/core/state"
 	"github.com/zenanetwork/go-zenanet/core/tracing"
 	"github.com/zenanetwork/go-zenanet/ethdb"
@@ -31,19 +31,26 @@ import (
 	"github.com/zenanetwork/go-zenanet/params"
 )
 
+// EireneInterface는 GovAdapter가 필요로 하는 Eirene 기능을 정의합니다.
+type EireneInterface interface {
+	GetDB() ethdb.Database
+	GetConfig() *params.EireneConfig
+	GetValidatorSet() utils.ValidatorSetInterface
+}
+
 // GovAdapter는 Cosmos SDK의 gov 모듈과 go-zenanet의 Eirene 합의 알고리즘을 연결하는 어댑터입니다.
 type GovAdapter struct {
-	eirene             *core.Eirene            // Eirene 합의 엔진 인스턴스
-	logger             log.Logger              // 로거
-	db                 ethdb.Database          // 데이터베이스
-	minDeposit         *big.Int                // 최소 제안 보증금
-	maxDepositPeriod   time.Duration           // 최대 보증금 기간
-	votingPeriod       time.Duration           // 투표 기간
-	quorumFloat        float64                 // 쿼럼 (투표 참여 최소 비율)
-	thresholdFloat     float64                 // 통과 임계값
-	vetoThresholdFloat float64                 // 거부권 임계값
+	eirene             EireneInterface       // Eirene 합의 엔진 인스턴스
+	logger             log.Logger            // 로거
+	db                 ethdb.Database        // 데이터베이스
+	minDeposit         *big.Int              // 최소 제안 보증금
+	maxDepositPeriod   time.Duration         // 최대 보증금 기간
+	votingPeriod       time.Duration         // 투표 기간
+	quorumFloat        float64               // 쿼럼 (투표 참여 최소 비율)
+	thresholdFloat     float64               // 통과 임계값
+	vetoThresholdFloat float64               // 거부권 임계값
 	proposals          map[uint64]*GovProposal // 제안 목록
-	nextProposalID     uint64                  // 다음 제안 ID
+	nextProposalID     uint64                // 다음 제안 ID
 }
 
 // GovProposal은 거버넌스 제안 정보를 나타내는 구조체입니다.
@@ -130,7 +137,7 @@ type GovCommunityPoolSpendInfo struct {
 }
 
 // NewGovAdapter는 새로운 GovAdapter 인스턴스를 생성합니다.
-func NewGovAdapter(eirene *core.Eirene, db ethdb.Database, config *params.EireneConfig) *GovAdapter {
+func NewGovAdapter(eirene EireneInterface, db ethdb.Database, config *params.EireneConfig) *GovAdapter {
 	return &GovAdapter{
 		eirene:             eirene,
 		logger:             log.New("module", "eirene/gov"),

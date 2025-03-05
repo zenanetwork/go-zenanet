@@ -48,10 +48,31 @@ const (
 
 	// 평판 시스템 매개변수
 	maxValidatorAge           = 365 * 24 * 60 * 4 // 약 1년 (15초 블록 기준)
-	maxSlashingHistoryPenalty = 500               // 최대 슬래싱 이력 페널티 (50%)
+	maxSlashingHistoryPoints  = 1000              // 최대 슬래싱 이력 포인트
 	maxCommunityVotes         = 1000              // 최대 커뮤니티 투표 수
 	maxNetworkContribPoints   = 1000              // 최대 네트워크 기여도 포인트
 )
+
+// 슬래싱 유형 상수 정의
+const (
+	SlashingTypeDoubleSignValue    uint8 = 1 // 이중 서명
+	SlashingTypeDowntimeValue      uint8 = 2 // 다운타임
+	SlashingTypeMisbehaviorValue   uint8 = 3 // 악의적 행동
+)
+
+// 슬래싱 유형에 따른 페널티
+func getSlashingTypePenalty(slashingType uint8) uint64 {
+	switch slashingType {
+	case SlashingTypeDoubleSignValue:
+		return 1000 // 100% 페널티
+	case SlashingTypeDowntimeValue:
+		return 500 // 50% 페널티
+	case SlashingTypeMisbehaviorValue:
+		return 750 // 75% 페널티
+	default:
+		return 0
+	}
+}
 
 // ValidatorReputationStats는 검증자의 평판 지표를 나타냅니다.
 type ValidatorReputationStats struct {
@@ -223,15 +244,7 @@ func calculateReputationScore(validator *EnhancedValidator, currentBlock uint64)
 			totalWeight += weight
 
 			// 슬래싱 유형에 따른 페널티
-			typePenalty := uint64(0)
-			switch event.Type {
-			case SlashingTypeDoubleSign:
-				typePenalty = 1000 // 100% 페널티
-			case SlashingTypeDowntime:
-				typePenalty = 500 // 50% 페널티
-			case SlashingTypeMisbehavior:
-				typePenalty = 750 // 75% 페널티
-			}
+			typePenalty := getSlashingTypePenalty(event.Type)
 
 			// 시간 경과에 따른 페널티 감소 (1년 후 50% 감소)
 			blocksPassed := currentBlock - event.BlockNumber
@@ -248,8 +261,8 @@ func calculateReputationScore(validator *EnhancedValidator, currentBlock uint64)
 		// 평균 페널티 계산
 		if totalWeight > 0 {
 			avgPenalty := weightedSlashingScore / totalWeight
-			if avgPenalty > maxSlashingHistoryPenalty {
-				avgPenalty = maxSlashingHistoryPenalty
+			if avgPenalty > maxSlashingHistoryPoints {
+				avgPenalty = maxSlashingHistoryPoints
 			}
 			slashingScore = 1000 - avgPenalty
 		}
@@ -350,7 +363,7 @@ func (vs *ValidatorSet) selectEnhancedValidators(totalBlocks uint64, currentBloc
 		// 평판 지표 설정 (실제 구현에서는 DB에서 로드)
 		enhancedValidators[i].Reputation = ValidatorReputationStats{
 			SlashingHistory:      []SlashingEvent{},    // 예시 데이터
-			LastSlashingBlock:    0,                    // 예시 데이터
+			LastSlashingBlock:     currentBlock - 10000, // 예시 데이터
 			TotalSlashingAmount:  big.NewInt(0),        // 예시 데이터
 			ActivationBlock:      currentBlock - 10000, // 예시 데이터
 			TotalActiveBlocks:    10000,                // 예시 데이터
@@ -430,4 +443,14 @@ func (vs *ValidatorSet) addCommunityVote(validator common.Address, vote int64) {
 		"vote", vote)
 
 	// 실제 구현에서는 DB에 저장
+}
+
+// 슬래싱 이벤트 생성 예시
+func createSlashingEvent(blockNumber uint64, slashingType uint8, amount *big.Int, reason string) SlashingEvent {
+	return SlashingEvent{
+		BlockNumber: blockNumber,
+		Type:        slashingType,
+		Amount:      amount,
+		Reason:      reason,
+	}
 }

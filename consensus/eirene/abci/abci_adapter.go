@@ -27,6 +27,7 @@ import (
 	tmtypes "github.com/tendermint/tendermint/types"
 	"github.com/zenanetwork/go-zenanet/consensus"
 	"github.com/zenanetwork/go-zenanet/consensus/eirene/core"
+	"github.com/zenanetwork/go-zenanet/consensus/eirene/utils"
 	"github.com/zenanetwork/go-zenanet/core/state"
 	"github.com/zenanetwork/go-zenanet/core/types"
 	"github.com/zenanetwork/go-zenanet/log"
@@ -44,14 +45,16 @@ type ABCIAdapter struct {
 	eirene *core.Eirene     // Eirene 합의 엔진 인스턴스
 	app    abci.Application // Tendermint ABCI 애플리케이션 인스턴스
 	logger log.Logger
+	validatorSet utils.ValidatorSetInterface // 검증자 집합
 }
 
 // NewABCIAdapter는 새로운 ABCIAdapter 인스턴스를 생성합니다.
-func NewABCIAdapter(eirene *core.Eirene, app abci.Application) *ABCIAdapter {
+func NewABCIAdapter(eirene *core.Eirene, app abci.Application, validatorSet utils.ValidatorSetInterface) *ABCIAdapter {
 	return &ABCIAdapter{
 		eirene: eirene,
 		app:    app,
-		logger: log.New("module", "abci_adapter"),
+		logger: log.New("module", "abci"),
+		validatorSet: validatorSet,
 	}
 }
 

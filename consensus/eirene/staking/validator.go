@@ -20,8 +20,10 @@ import (
 	"errors"
 	"math/big"
 	"sort"
+	"sync"
 
 	"github.com/zenanetwork/go-zenanet/common"
+	"github.com/zenanetwork/go-zenanet/consensus/eirene/utils"
 	"github.com/zenanetwork/go-zenanet/core/types"
 	"github.com/zenanetwork/go-zenanet/ethdb"
 	"github.com/zenanetwork/go-zenanet/log"
@@ -30,9 +32,9 @@ import (
 
 // 검증자 상태 상수
 const (
-	ValidatorStatusActive    = 0 // 활성 상태
-	ValidatorStatusJailed    = 1 // 감금 상태
-	ValidatorStatusUnbonding = 2 // 언본딩 상태
+	ValidatorStatusActive    = utils.ValidatorStatusActive    // 활성 상태
+	ValidatorStatusJailed    = utils.ValidatorStatusJailed    // 감금 상태
+	ValidatorStatusUnbonding = utils.ValidatorStatusUnbonding // 언본딩 상태
 )
 
 // 검증자 성능 가중치 상수
@@ -49,6 +51,20 @@ const (
 
 	// 최대 검증자 수
 	maxValidators = 100
+
+	// 최소 스테이킹 금액
+	MinStake = 1000 * 1e18 // 1000 토큰
+
+	// 위임자당 최소 위임 금액
+	MinDelegation = 10 * 1e18 // 10 토큰
+
+	// 슬래싱 비율
+	DoubleSignSlashingRate  = 0.1  // 이중 서명 시 10% 슬래싱
+	DowntimeSlashingRate    = 0.01 // 다운타임 시 1% 슬래싱
+	MisbehaviorSlashingRate = 0.05 // 기타 악의적 행동 시 5% 슬래싱
+
+	// 감금 기간
+	JailPeriod = 86400 // 1일 (초 단위)
 )
 
 // ValidatorDelegation은 검증자에게 위임된 정보를 나타냅니다.
@@ -94,6 +110,8 @@ type ValidatorSet struct {
 	Validators  map[common.Address]*Validator `json:"validators"`  // 검증자 맵
 	TotalStake  *big.Int                      `json:"totalStake"`  // 총 스테이킹 양
 	BlockHeight uint64                        `json:"blockHeight"` // 마지막 업데이트 블록 높이
+
+	lock sync.RWMutex // 동시성 제어를 위한 잠금
 }
 
 // newValidatorSet은 새로운 검증자 집합을 생성합니다.
@@ -387,41 +405,83 @@ func (vs *ValidatorSet) slashValidator(address common.Address, slashRatio uint64
 	log.Info("Validator slashed", "address", address, "ratio", slashRatio, "amount", slashAmount)
 }
 
-// getValidatorByAddress는 주소로 검증자를 조회합니다.
-func (vs *ValidatorSet) getValidatorByAddress(address common.Address) *Validator {
-	return vs.Validators[address]
+// GetAddress는 검증자의 주소를 반환합니다.
+func (v *Validator) GetAddress() common.Address {
+	return v.Address
 }
 
-// getValidatorCount는 검증자 수를 반환합니다.
-func (vs *ValidatorSet) getValidatorCount() int {
+// GetVotingPower는 검증자의 투표 파워를 반환합니다.
+func (v *Validator) GetVotingPower() *big.Int {
+	return v.VotingPower
+}
+
+// GetStatus는 검증자의 상태를 반환합니다.
+func (v *Validator) GetStatus() uint8 {
+	return v.Status
+}
+
+// IsActive는 검증자가 활성 상태인지 여부를 반환합니다.
+func (v *Validator) IsActive() bool {
+	return v.Status == ValidatorStatusActive
+}
+
+// GetValidatorCount는 검증자 집합의 총 검증자 수를 반환합니다.
+func (vs *ValidatorSet) GetValidatorCount() int {
+	vs.lock.RLock()
+	defer vs.lock.RUnlock()
 	return len(vs.Validators)
 }
 
-// getActiveValidatorCount는 활성 검증자 수를 반환합니다.
-func (vs *ValidatorSet) getActiveValidatorCount() int {
+// GetActiveValidatorCount는 검증자 집합의 활성 검증자 수를 반환합니다.
+func (vs *ValidatorSet) GetActiveValidatorCount() int {
+	vs.lock.RLock()
+	defer vs.lock.RUnlock()
 	count := 0
-	for _, validator := range vs.Validators {
-		if validator.Status == ValidatorStatusActive {
+	for _, v := range vs.Validators {
+		if v.Status == ValidatorStatusActive {
 			count++
 		}
 	}
 	return count
 }
 
-// getTotalStake는 총 스테이킹 양을 반환합니다.
-func (vs *ValidatorSet) getTotalStake() *big.Int {
+// GetTotalStake는 검증자 집합의 총 스테이킹 양을 반환합니다.
+func (vs *ValidatorSet) GetTotalStake() *big.Int {
+	vs.lock.RLock()
+	defer vs.lock.RUnlock()
 	return new(big.Int).Set(vs.TotalStake)
 }
 
-// getValidatorsByStatus는 상태별 검증자 목록을 반환합니다.
-func (vs *ValidatorSet) getValidatorsByStatus(status uint8) []*Validator {
-	validators := make([]*Validator, 0)
-	for _, validator := range vs.Validators {
-		if validator.Status == status {
-			validators = append(validators, validator)
+// GetValidatorByAddress는 주소로 검증자를 조회합니다.
+func (vs *ValidatorSet) GetValidatorByAddress(address common.Address) utils.ValidatorInterface {
+	vs.lock.RLock()
+	defer vs.lock.RUnlock()
+	validator, exists := vs.Validators[address]
+	if !exists {
+		return nil
+	}
+	return validator
+}
+
+// GetActiveValidators는 활성 상태인 검증자 목록을 반환합니다.
+func (vs *ValidatorSet) GetActiveValidators() []utils.ValidatorInterface {
+	vs.lock.RLock()
+	defer vs.lock.RUnlock()
+	var activeValidators []utils.ValidatorInterface
+	for _, v := range vs.Validators {
+		if v.Status == ValidatorStatusActive {
+			activeValidators = append(activeValidators, v)
 		}
 	}
-	return validators
+	return activeValidators
+}
+
+// Contains는 주어진 주소의 검증자가 검증자 집합에 포함되어 있는지 확인합니다.
+func (vs *ValidatorSet) Contains(address common.Address) bool {
+	vs.lock.RLock()
+	defer vs.lock.RUnlock()
+	_, exists := vs.Validators[address]
+	return exists
 }
 
 // processEpochTransition은 에포크 전환 시 검증자 집합을 업데이트합니다.

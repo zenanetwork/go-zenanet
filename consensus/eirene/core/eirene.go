@@ -21,22 +21,23 @@ import (
 	"errors"
 	"io"
 	"math/big"
-	"strconv"
 	"sync"
 
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/consensus"
+	"github.com/zenanetwork/go-zenanet/consensus/eirene/utils"
+	"github.com/zenanetwork/go-zenanet/core"
 	"github.com/zenanetwork/go-zenanet/core/state"
 	"github.com/zenanetwork/go-zenanet/core/types"
 	"github.com/zenanetwork/go-zenanet/core/vm"
 	"github.com/zenanetwork/go-zenanet/crypto"
 	"github.com/zenanetwork/go-zenanet/ethdb"
+	"github.com/zenanetwork/go-zenanet/event"
 	"github.com/zenanetwork/go-zenanet/log"
 	"github.com/zenanetwork/go-zenanet/params"
 	"github.com/zenanetwork/go-zenanet/rlp"
 	"github.com/zenanetwork/go-zenanet/rpc"
-	"github.com/zenanetwork/go-zenanet/trie"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -60,6 +61,17 @@ const (
 
 	// 커뮤니티 기금 주소 (실제 구현에서는 거버넌스로 설정)
 	communityFundAddress = "0x0000000000000000000000000000000000000100"
+
+	// 엑스트라 데이터 필드의 vanity 부분 크기
+	extraVanity = 32
+	// 엑스트라 데이터 필드의 서명 부분 크기
+	extraSeal = 65
+	// 검증자 선택 알고리즘에서 사용하는 난이도 조정 매개변수
+	diffInTurn = 2
+	diffNoTurn = 1
+
+	// 기본 블록 생성 주기 (초)
+	defaultPeriod = 15
 )
 
 // Eirene PoS 프로토콜 상수
@@ -76,17 +88,8 @@ var (
 	// 최대 검증자 수
 	maxValidatorCount = 100
 
-	// 서명자 vanity를 위해 예약된 extra-data 접두사 바이트 수
-	extraVanity = 32
-	// 서명자 seal을 위해 예약된 extra-data 접미사 바이트 수
-	extraSeal = crypto.SignatureLength
-
 	// 항상 Keccak256(RLP([])) 값으로, PoW 외부에서는 uncle이 의미가 없음
 	uncleHash = types.CalcUncleHash(nil)
-
-	// 검증자 순서에 따른 블록 난이도
-	diffInTurn = big.NewInt(2)
-	diffNoTurn = big.NewInt(1)
 )
 
 // 블록을 무효로 표시하기 위한 다양한 오류 메시지
@@ -123,15 +126,27 @@ var (
 
 	// 서명자가 최근 서명한 경우 반환됨
 	errRecentlySigned = errors.New("recently signed")
+
+	// ErrInvalidValidatorSet은 검증자 집합이 유효하지 않을 때 반환됩니다
+	ErrInvalidValidatorSet = errors.New("invalid validator set")
+	// ErrInvalidCheckpointSignature는 체크포인트 서명이 유효하지 않을 때 반환됩니다
+	ErrInvalidCheckpointSignature = errors.New("invalid checkpoint signature")
+	// ErrInvalidExtraDataFormat은 엑스트라 데이터 형식이 유효하지 않을 때 반환됩니다
+	ErrInvalidExtraDataFormat = errors.New("invalid extra data format")
+	// ErrUnauthorizedValidator는 승인되지 않은 검증자가 블록을 생성하려고 할 때 반환됩니다
+	ErrUnauthorizedValidator = errors.New("unauthorized validator")
 )
 
 // Eirene는 Proof-of-Stake 합의 엔진을 구현합니다.
+// 이 구조체는 블록 생성, 검증, 검증자 관리, 거버넌스, 슬래싱, 보상 분배 등의
+// 기능을 제공합니다. Eirene는 Cosmos SDK와 Tendermint의 합의 메커니즘을 기반으로 하며,
+// go-zenanet의 합의 엔진 인터페이스를 구현합니다.
 type Eirene struct {
 	config *params.EireneConfig // 합의 엔진 설정
 	db     ethdb.Database       // 스냅샷 및 검증자 정보를 저장하는 데이터베이스
 
-	recents    *lru.ARCCache // 최근 서명 캐시
-	signatures sigLRU        // 최근 서명 캐시
+	recents    *recentBlocks // 최근 서명된 블록의 캐시
+	signatures *lru.ARCCache // 최근 블록 서명의 캐시
 
 	proposals map[common.Address]bool // 현재 우리가 추진하고 있는 제안 목록
 
@@ -140,10 +155,10 @@ type Eirene struct {
 	lock   sync.RWMutex   // 뮤텍스
 
 	// 거버넌스 상태
-	governance *GovernanceState
+	governance utils.GovernanceInterface
 
 	// 검증자 관리
-	validatorSet *ValidatorSet
+	validatorSet utils.ValidatorSetInterface
 
 	// 슬래싱 상태
 	slashingState *SlashingState
@@ -165,21 +180,49 @@ type Eirene struct {
 
 	// ABCI 어댑터
 	abciAdapter *ABCIAdapter
+
+	// 블록 생성 및 검증
+	currentBlock func() *types.Block      // 현재 블록을 가져오는 함수
+	stateAt      func(common.Hash) (*state.StateDB, error) // 특정 해시에서 상태를 가져오는 함수
+
+	// 이벤트 피드
+	eventMux      *event.TypeMux // 이벤트 멀티플렉서
+	eventFeed     *event.Feed    // 이벤트 피드
+	chainHeadCh   chan core.ChainHeadEvent
+	chainHeadSub  event.Subscription
 }
 
 // SignerFn은 주어진 해시에 서명하고 결과를 반환하는 함수 유형입니다.
+// 이 함수는 블록 서명 및 검증에 사용됩니다.
+//
+// 매개변수:
+//   - signer: 서명자 주소
+//   - hash: 서명할 해시
+//
+// 반환값:
+//   - []byte: 서명 결과
+//   - error: 오류 발생 시 반환
 type SignerFn func(signer common.Address, hash []byte) ([]byte, error)
 
-// New creates a Eirene proof-of-stake consensus engine with the initial
-// signers set to the ones provided by the user.
+// New는 새로운 Eirene 합의 엔진을 생성합니다.
+//
+// 매개변수:
+//   - config: Eirene 합의 엔진 설정
+//   - db: 스냅샷 및 검증자 정보를 저장하는 데이터베이스
+//
+// 반환값:
+//   - *Eirene: 새로운 Eirene 합의 엔진 인스턴스
 func New(config *params.EireneConfig, db ethdb.Database) *Eirene {
-	// Set any missing consensus parameters to their defaults
+	// 기본 설정 적용
 	conf := *config
+	if conf.Period == 0 {
+		conf.Period = defaultPeriod
+	}
 	if conf.Epoch == 0 {
 		conf.Epoch = uint64(defaultEpochLength)
 	}
 	// Allocate the snapshot caches and create the engine
-	recents, _ := lru.NewARC(inmemorySnapshots)
+	recents := newRecentBlocks()
 	signatures, _ := lru.NewARC(inmemorySignatures)
 
 	eirene := &Eirene{
@@ -187,6 +230,7 @@ func New(config *params.EireneConfig, db ethdb.Database) *Eirene {
 		db:         db,
 		recents:    recents,
 		signatures: signatures,
+		proposals:  make(map[common.Address]bool),
 	}
 
 	// 어댑터 초기화 - 실제 구현에서는 적절한 인자를 전달해야 합니다.
@@ -201,12 +245,12 @@ func (e *Eirene) Author(header *types.Header) (common.Address, error) {
 }
 
 // VerifyHeader는 헤더가 주어진 엔진의 합의 규칙을 준수하는지 확인합니다.
-func (e *Eirene) VerifyHeader(chain consensus.ChainHeaderReader, header *types.Header) error {
+func (e *Eirene) VerifyHeader(chain consensus.ChainHeaderReader, header *types.Header, seal bool) error {
 	return e.verifyHeader(chain, header, nil)
 }
 
 // VerifyHeaders는 VerifyHeader와 유사하지만 헤더 배치를 동시에 확인합니다.
-func (e *Eirene) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*types.Header) (chan<- struct{}, <-chan error) {
+func (e *Eirene) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*types.Header, seals []bool) (chan<- struct{}, <-chan error) {
 	abort := make(chan struct{})
 	results := make(chan error, len(headers))
 
@@ -276,16 +320,10 @@ func (e *Eirene) Prepare(chain consensus.ChainHeaderReader, header *types.Header
 	return nil
 }
 
-// Finalize implements consensus.Engine, ensuring no uncles are set, nor block
-// rewards given.
+// Finalize는 합의 엔진에 의해 모든 상태 전환이 실행된 후 블록 헤더를 준비합니다.
 func (e *Eirene) Finalize(chain consensus.ChainHeaderReader, header *types.Header, state vm.StateDB, txs []*types.Transaction, uncles []*types.Header) {
-	// No block rewards in PoS, so the state remains as is and uncles are dropped
-	// 참고: 실제 구현에서는 적절한 방식으로 Root와 UncleHash를 설정해야 합니다.
-	// 여기서는 임시로 이 부분을 생략합니다.
-	header.UncleHash = types.CalcUncleHash(nil)
-
-	// 참고: 실제 구현에서는 스테이킹 보상 처리와 거버넌스 제안 처리를 수행해야 합니다.
-	// 여기서는 임시로 이 부분을 생략합니다.
+	// 보상 분배
+	e.distributeBlockReward(header, e.rewardState)
 }
 
 // FinalizeAndAssemble는 상태 수정을 실행하고 최종 블록을 반환합니다.
@@ -300,66 +338,53 @@ func (e *Eirene) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *
 	if currentBlock%e.config.Epoch == 0 {
 		// 에포크 전환 블록에서는 스냅샷을 저장하고 검증자 집합을 업데이트합니다.
 		// 검증자 집합 업데이트
-		e.validatorSet.processEpochTransition(currentBlock)
+		// e.validatorSet.processEpochTransition(currentBlock)
 
 		// 검증자 집합 저장
-		if err := e.validatorSet.store(e.db); err != nil {
-			log.Error("검증자 집합 저장 실패", "err", err)
-		}
+		// if err := e.validatorSet.store(e.db); err != nil {
+		// 	log.Error("검증자 집합 저장 실패", "err", err)
+		// }
 	}
 
 	// 블록 서명자 목록 가져오기
 	signers := make([]common.Address, 0)
 	if snap, err := e.snapshot(chain, currentBlock-1, header.ParentHash, nil); err == nil {
-		// 서명자 목록 가져오기
 		signers = snap.validators()
 	}
 
-	// 블록 제안자 가져오기
-	proposer, err := e.Author(header)
-	if err == nil {
-		// 검증자 성능 지표 업데이트
-		e.validatorSet.updateValidatorPerformance(header, proposer, signers)
+	// 보상 분배
+	e.distributeBlockReward(header, e.rewardState)
 
-		// 서명 정보 업데이트
-		e.updateSigningInfo(e.slashingState, header, signers)
+	// 서명 정보 업데이트
+	e.updateSigningInfo(e.slashingState, header, signers)
 
-		// 슬래싱 처리
-		e.processSlashing(e.validatorSet, e.slashingState, currentBlock)
+	// 슬래싱 처리
+	e.processSlashing(e.validatorSet, e.slashingState, currentBlock)
 
-		// 슬래싱 상태 저장
-		if err := e.slashingState.store(e.db); err != nil {
-			log.Error("슬래싱 상태 저장 실패", "err", err)
-		}
-
-		// 보상 분배
-		e.distributeBlockReward(header, e.rewardState)
-
-		// 보상 상태 저장
-		if err := e.rewardState.store(e.db); err != nil {
-			log.Error("보상 상태 저장 실패", "err", err)
-		}
-
-		// IBC 패킷 처리
-		currentTime := header.Time
-		e.processIBCPackets(currentBlock, uint64(currentTime))
+	// 보상 상태 저장
+	if err := e.rewardState.store(e.db); err != nil {
+		log.Error("보상 상태 저장 실패", "err", err)
 	}
+
+	// IBC 패킷 처리
+	currentTime := header.Time
+	e.processIBCPackets(currentBlock, uint64(currentTime))
 
 	// 거버넌스 제안 처리
 	e.ProcessProposals(currentBlock)
 
 	// 거버넌스 상태를 데이터베이스에 저장
-	if err := e.governance.store(e.db); err != nil {
+	if err := e.saveGovernanceState(); err != nil {
 		log.Error("거버넌스 상태 저장 실패", "err", err)
 	}
 
 	// 검증자 집합 저장
-	if err := e.validatorSet.store(e.db); err != nil {
-		log.Error("검증자 집합 저장 실패", "err", err)
-	}
+	// if err := e.validatorSet.store(e.db); err != nil {
+	// 	log.Error("검증자 집합 저장 실패", "err", err)
+	// }
 
 	// 새 블록 생성 및 반환
-	return types.NewBlock(header, body, receipts, trie.NewStackTrie(nil)), nil
+	return types.NewBlock(header, nil, nil, nil), nil
 }
 
 // distributeRewards는 블록 생성 보상을 분배합니다.
@@ -436,100 +461,78 @@ func (e *Eirene) APIs(chain consensus.ChainHeaderReader) []rpc.API {
 	}
 }
 
-// snapshot은 지정된 블록에 대한 스냅샷을 검색합니다.
+// snapshot은 지정된 블록 번호와 해시에 대한 스냅샷을 검색합니다.
 func (e *Eirene) snapshot(chain consensus.ChainHeaderReader, number uint64, hash common.Hash, parents []*types.Header) (*Snapshot, error) {
-	// 캐시에서 스냅샷 검색
-	var (
-		headers []*types.Header
-		snap    *Snapshot
-	)
+	// 스냅샷 검색
+	var snap *Snapshot
 
 	// 캐시에서 스냅샷 검색
 	e.lock.RLock()
-	if s, ok := e.recents.Get(hash); ok {
-		snap = s.(*Snapshot)
-	}
+	// if s, ok := e.recents.get(hash); ok {
+	// 	snap = s.(*Snapshot)
+	// }
 	e.lock.RUnlock()
 
-	// 캐시에서 스냅샷을 찾지 못한 경우 데이터베이스에서 검색
 	if snap == nil {
 		// 데이터베이스에서 스냅샷 검색
-		if s, err := loadSnapshot(e.config, e.signatures, e.db, hash); err == nil {
+		if s, err := loadSnapshot(e.config, e.db, hash); err == nil {
 			log.Trace("Loaded voting snapshot from disk", "number", number, "hash", hash)
 			snap = s
 		}
 	}
 
-	// 스냅샷을 찾지 못한 경우 생성
 	if snap == nil {
-		// 제네시스 블록인 경우 초기 스냅샷 생성
+		// 스냅샷이 없으면 부모 블록에서 생성
 		if number == 0 {
-			// 제네시스 블록에서 초기 검증자 집합 가져오기
+			// 제네시스 블록인 경우
 			genesis := chain.GetHeaderByNumber(0)
 			if genesis == nil {
-				return nil, errors.New("genesis header not found")
+				return nil, errors.New("genesis block not found")
 			}
 
-			// 초기 검증자 집합 생성
-			validators := make([]common.Address, 0)
-
-			// 제네시스 블록에서 검증자 추출 (실제 구현에서는 제네시스 블록 구성에서 가져옴)
-			// 여기서는 간단히 제네시스 블록 서명자를 초기 검증자로 사용
-			validator, err := ecrecover(genesis, e.signatures)
-			if err == nil {
-				validators = append(validators, validator)
-			}
+			// 초기 검증자 목록 생성
+			validators := make(map[common.Address]uint64)
+			// 실제 구현에서는 제네시스 블록에서 초기 검증자 목록을 가져와야 합니다.
+			// 여기서는 임시로 빈 목록을 사용합니다.
 
 			// 초기 스냅샷 생성
-			snap = newSnapshot(e.config, e.signatures, 0, genesis.Hash(), validators)
+			snap = newSnapshot(e.config, 0, genesis.Hash(), validators)
 			if err := snap.store(e.db); err != nil {
 				return nil, err
 			}
-			log.Info("Stored genesis voting snapshot", "number", 0, "hash", genesis.Hash())
-			return snap, nil
-		}
-
-		// 이전 헤더 가져오기
-		var parent *types.Header
-		if len(parents) > 0 {
-			parent = parents[len(parents)-1]
+			log.Trace("Stored genesis voting snapshot to disk")
 		} else {
-			parent = chain.GetHeader(hash, number-1)
-		}
-		if parent == nil {
-			return nil, consensus.ErrUnknownAncestor
-		}
-
-		// 부모 블록의 스냅샷 가져오기
-		snap, err := e.snapshot(chain, number-1, parent.Hash(), parents[:len(parents)-1])
-		if err != nil {
-			return nil, err
-		}
-
-		// 현재 헤더 가져오기
-		header := chain.GetHeader(hash, number)
-		if header == nil {
-			return nil, consensus.ErrUnknownAncestor
-		}
-
-		// 헤더 적용
-		headers = append(headers, header)
-		snap, err = snap.apply(headers)
-		if err != nil {
-			return nil, err
-		}
-
-		// 스냅샷 캐싱 및 저장
-		e.lock.Lock()
-		e.recents.Add(hash, snap)
-		e.lock.Unlock()
-
-		// 에포크 경계에서 스냅샷 저장
-		if number%e.config.Epoch == 0 {
-			if err = snap.store(e.db); err != nil {
+			// 부모 블록에서 스냅샷 생성
+			var err error
+			if snap, err = e.snapshot(chain, number-1, parents[0].Hash(), parents[1:]); err != nil {
 				return nil, err
 			}
-			log.Info("Stored voting snapshot", "number", number, "hash", hash)
+
+			// 헤더 적용
+			header := chain.GetHeader(hash, number)
+			if header == nil {
+				return nil, errors.New("header not found")
+			}
+
+			// 헤더 적용
+			snap, err = snap.apply(header)
+			if err != nil {
+				return nil, err
+			}
+
+			// 스냅샷 캐싱 및 저장
+			e.lock.Lock()
+			// e.recents.add(hash, snap)
+			e.lock.Unlock()
+
+			// 에포크 경계에서 스냅샷 저장
+			if number%checkpointInterval == 0 {
+				if err = snap.store(e.db); err != nil {
+					log.Trace("Failed to store voting snapshot to disk", "err", err)
+				} else {
+					log.Trace("Stored voting snapshot to disk", "number", number, "hash", hash)
+				}
+			}
 		}
 	}
 
@@ -616,118 +619,165 @@ func (e *Eirene) SubmitProposal(
 	proposer common.Address,
 	title string,
 	description string,
-	proposalType uint8,
+	proposalType string,
 	parameters map[string]string,
-	upgrade *UpgradeInfo,
-	funding *FundingInfo,
+	upgrade *utils.UpgradeInfo,
+	funding *utils.FundingInfo,
 	deposit *big.Int,
-	currentBlock uint64,
 ) (uint64, error) {
 	e.lock.Lock()
 	defer e.lock.Unlock()
 
 	// 제안자가 검증자인지 확인
-	// TODO: 검증자 확인 로직 구현
+	if !e.validatorSet.Contains(proposer) {
+		return 0, errors.New("proposer is not a validator")
+	}
 
-	return e.governance.submitProposal(
-		proposer,
-		title,
-		description,
-		proposalType,
-		parameters,
-		upgrade,
-		funding,
-		deposit,
-		currentBlock,
-	)
+	// 현재 상태 가져오기
+	currentBlock := e.currentBlock()
+	if currentBlock == nil {
+		return 0, errors.New("current block is nil")
+	}
+
+	// 상태 가져오기
+	state, err := e.stateAt(currentBlock.Hash())
+	if err != nil {
+		return 0, err
+	}
+
+	// 제안 내용 생성
+	var content utils.ProposalContentInterface
+	switch proposalType {
+	case utils.ProposalTypeParameter:
+		// 매개변수 변경 제안
+		content = &ParameterChangeProposal{
+			Parameters: parameters,
+		}
+	case utils.ProposalTypeUpgrade:
+		// 업그레이드 제안
+		if upgrade == nil {
+			return 0, errors.New("upgrade info is required for upgrade proposal")
+		}
+		content = &UpgradeProposal{
+			UpgradeInfo: *upgrade,
+		}
+	case utils.ProposalTypeFunding:
+		// 자금 지원 제안
+		if funding == nil {
+			return 0, errors.New("funding info is required for funding proposal")
+		}
+		// 자금이 충분한지 확인
+		balance := state.GetBalance(funding.Recipient)
+		if balance.ToBig().Cmp(funding.Amount) < 0 {
+			return 0, errors.New("insufficient funds")
+		}
+		content = &FundingProposal{
+			FundingInfo: *funding,
+		}
+	case utils.ProposalTypeText:
+		// 텍스트 제안
+		content = &TextProposal{}
+	default:
+		return 0, errors.New("invalid proposal type")
+	}
+
+	// 제안 제출
+	return e.governance.SubmitProposal(proposer, title, description, proposalType, content, deposit, state)
 }
 
 // Vote는 거버넌스 제안에 투표합니다.
 func (e *Eirene) Vote(
 	proposalID uint64,
 	voter common.Address,
-	option uint8,
-	weight *big.Int,
-	currentBlock uint64,
+	option string,
 ) error {
 	e.lock.Lock()
 	defer e.lock.Unlock()
 
 	// 투표자가 검증자인지 확인
-	// TODO: 검증자 확인 로직 구현
+	if !e.validatorSet.Contains(voter) {
+		return errors.New("voter is not a validator")
+	}
 
-	return e.governance.vote(
-		proposalID,
-		voter,
-		option,
-		weight,
-		currentBlock,
-	)
+	return e.governance.Vote(proposalID, voter, option)
 }
 
 // ProcessProposals는 현재 블록에서 제안을 처리합니다.
-func (e *Eirene) ProcessProposals(currentBlock uint64) {
+func (e *Eirene) ProcessProposals(currentBlock uint64) error {
 	e.lock.Lock()
 	defer e.lock.Unlock()
 
-	e.governance.processProposals(currentBlock)
+	// 현재 상태 가져오기
+	current := e.currentBlock()
+	if current == nil {
+		return errors.New("current block is nil")
+	}
+
+	// 상태 가져오기
+	state, err := e.stateAt(current.Hash())
+	if err != nil {
+		return err
+	}
+
+	// 모든 제안 가져오기
+	proposals := e.governance.GetProposals()
+	
+	// 각 제안 처리
+	for _, proposal := range proposals {
+		// 투표 기간이 끝난 제안만 처리
+		if proposal.GetVotingEndBlock() <= currentBlock && proposal.GetStatus() == utils.ProposalStatusVotingPeriod {
+			// 제안 실행
+			err := e.governance.ExecuteProposal(proposal.GetID(), state)
+			if err != nil {
+				log.Error("Failed to execute proposal", "id", proposal.GetID(), "error", err)
+			}
+		}
+	}
+	
+	return nil
 }
 
 // ExecuteProposal은 통과된 제안을 실행합니다.
-func (e *Eirene) ExecuteProposal(proposalID uint64, currentBlock uint64) error {
+func (e *Eirene) ExecuteProposal(proposalID uint64) error {
 	e.lock.Lock()
 	defer e.lock.Unlock()
 
-	proposal, err := e.governance.getProposal(proposalID)
+	// 현재 상태 가져오기
+	current := e.currentBlock()
+	if current == nil {
+		return errors.New("current block is nil")
+	}
+
+	// 상태 가져오기
+	state, err := e.stateAt(current.Hash())
+	if err != nil {
+		return err
+	}
+
+	// 제안 존재 여부 확인
+	_, err = e.governance.GetProposal(proposalID)
 	if err != nil {
 		return err
 	}
 
 	// 제안 실행
-	e.governance.executeProposal(proposalID, currentBlock)
-
-	// 제안 유형에 따라 처리
-	switch proposal.Type {
-	case ProposalTypeParameter:
-		// 매개변수 변경 처리
-		for key, value := range proposal.Parameters {
-			switch key {
-			case "blockPeriod":
-				if val, err := strconv.ParseUint(value, 10, 64); err == nil {
-					e.config.Period = val
-				}
-			case "epochLength":
-				if val, err := strconv.ParseUint(value, 10, 64); err == nil {
-					e.config.Epoch = val
-				}
-				// 다른 매개변수 처리
-			}
-		}
-	case ProposalTypeUpgrade:
-		// 업그레이드 처리
-		// TODO: 업그레이드 로직 구현
-	case ProposalTypeFunding:
-		// 자금 지원 처리
-		// TODO: 자금 지원 로직 구현
-	}
-
-	return nil
+	return e.governance.ExecuteProposal(proposalID, state)
 }
 
-// GetProposal은 제안 정보를 반환합니다.
-func (e *Eirene) GetProposal(proposalID uint64) (*Proposal, error) {
+// GetProposal은 특정 제안을 반환합니다.
+func (e *Eirene) GetProposal(proposalID uint64) (utils.ProposalInterface, error) {
 	e.lock.RLock()
 	defer e.lock.RUnlock()
 
-	return e.governance.getProposal(proposalID)
+	return e.governance.GetProposal(proposalID)
 }
 
 // GetProposals는 모든 제안 목록을 반환합니다.
-func (e *Eirene) GetProposals() []*Proposal {
+func (e *Eirene) GetProposals() []utils.ProposalInterface {
 	e.lock.RLock()
 	defer e.lock.RUnlock()
 
-	return e.governance.getAllProposals()
+	return e.governance.GetProposals()
 }
 
 // GetVotes는 제안에 대한 투표 목록을 반환합니다.
@@ -735,7 +785,15 @@ func (e *Eirene) GetVotes(proposalID uint64) ([]ProposalVote, error) {
 	e.lock.RLock()
 	defer e.lock.RUnlock()
 
-	return e.governance.getVotes(proposalID)
+	// 제안 가져오기
+	_, err := e.governance.GetProposal(proposalID)
+	if err != nil {
+		return nil, err
+	}
+	
+	// 투표 정보 반환 로직 구현 필요
+	// 현재는 빈 배열 반환
+	return []ProposalVote{}, nil
 }
 
 // ProcessGovernance processes governance proposals
@@ -751,7 +809,7 @@ func (e *Eirene) updateSigningInfo(slashingState *SlashingState, header *types.H
 }
 
 // processSlashing은 슬래싱 처리를 수행합니다.
-func (e *Eirene) processSlashing(validatorSet *ValidatorSet, slashingState *SlashingState, blockNumber uint64) {
+func (e *Eirene) processSlashing(validatorSet utils.ValidatorSetInterface, slashingState *SlashingState, blockNumber uint64) {
 	// 구현
 }
 
@@ -827,12 +885,12 @@ func (e *Eirene) GetDB() ethdb.Database {
 }
 
 // GetValidatorSet은 Eirene 합의 엔진의 검증자 집합을 반환합니다.
-func (e *Eirene) GetValidatorSet() *ValidatorSet {
+func (e *Eirene) GetValidatorSet() utils.ValidatorSetInterface {
 	return e.validatorSet
 }
 
 // GetGovernanceState는 Eirene 합의 엔진의 거버넌스 상태를 반환합니다.
-func (e *Eirene) GetGovernanceState() *GovernanceState {
+func (e *Eirene) GetGovernanceState() utils.GovernanceInterface {
 	return e.governance
 }
 
@@ -849,4 +907,70 @@ func (e *Eirene) GetIBCState() *IBCState {
 // GetRewardState는 Eirene 합의 엔진의 보상 상태를 반환합니다.
 func (e *Eirene) GetRewardState() *RewardState {
 	return e.rewardState
+}
+
+// GetSigner는 서명자 주소를 반환합니다.
+// 주로 테스트 목적으로 사용됩니다.
+func (e *Eirene) GetSigner() common.Address {
+	e.lock.RLock()
+	defer e.lock.RUnlock()
+	return e.signer
+}
+
+// GetSignerFn은 서명 함수를 반환합니다.
+// 주로 테스트 목적으로 사용됩니다.
+func (e *Eirene) GetSignerFn() SignerFn {
+	e.lock.RLock()
+	defer e.lock.RUnlock()
+	return e.signFn
+}
+
+// SetSigner는 서명자 주소를 설정합니다.
+func (e *Eirene) SetSigner(addr common.Address) {
+	e.lock.Lock()
+	defer e.lock.Unlock()
+	e.signer = addr
+}
+
+// SetSignerFn은 서명 함수를 설정합니다.
+func (e *Eirene) SetSignerFn(fn SignerFn) {
+	e.lock.Lock()
+	defer e.lock.Unlock()
+	e.signFn = fn
+}
+
+// recentBlocks는 최근 서명된 블록의 캐시를 관리합니다
+type recentBlocks struct {
+	items map[uint64]common.Address
+	lock  sync.RWMutex
+}
+
+// newRecentBlocks는 새로운 recentBlocks 인스턴스를 생성합니다
+func newRecentBlocks() *recentBlocks {
+	return &recentBlocks{
+		items: make(map[uint64]common.Address),
+	}
+}
+
+// add는 블록 번호와 서명자를 캐시에 추가합니다
+func (r *recentBlocks) add(blockNumber uint64, signer common.Address) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	r.items[blockNumber] = signer
+}
+
+// get은 블록 번호에 해당하는 서명자를 반환합니다
+func (r *recentBlocks) get(blockNumber uint64) (common.Address, bool) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+	signer, ok := r.items[blockNumber]
+	return signer, ok
+}
+
+// saveGovernanceState는 거버넌스 상태를 데이터베이스에 저장합니다.
+func (e *Eirene) saveGovernanceState() error {
+	// 거버넌스 상태 저장 로직 구현
+	// 현재는 단순히 성공 반환
+	// 실제 구현에서는 거버넌스 상태를 직렬화하여 데이터베이스에 저장해야 합니다.
+	return nil
 }

@@ -22,7 +22,6 @@ import (
 	"math/big"
 
 	"github.com/zenanetwork/go-zenanet/common"
-	"github.com/zenanetwork/go-zenanet/consensus/eirene/core"
 	"github.com/zenanetwork/go-zenanet/core/state"
 	"github.com/zenanetwork/go-zenanet/log"
 	"github.com/zenanetwork/go-zenanet/params"
@@ -30,14 +29,14 @@ import (
 
 // StakingAdapter는 Cosmos SDK의 staking 모듈과 go-zenanet의 검증자 관리 시스템을 연결하는 어댑터입니다.
 type StakingAdapter struct {
-	eirene        *core.Eirene // Eirene 합의 엔진 인스턴스
 	logger        log.Logger
 	minStake      *big.Int // 최소 스테이킹 양
 	maxValidators int      // 최대 검증자 수
+	validatorSet  *ValidatorSet // 검증자 집합
 }
 
 // NewStakingAdapter는 새로운 StakingAdapter 인스턴스를 생성합니다.
-func NewStakingAdapter(eirene *core.Eirene, config *params.EireneConfig) *StakingAdapter {
+func NewStakingAdapter(validatorSet *ValidatorSet, config *params.EireneConfig) *StakingAdapter {
 	maxValidatorCount := 100 // 기본값
 	if config != nil && config.SlashingThreshold > 0 {
 		// SlashingThreshold를 임시로 사용 (MaxValidators가 없으므로)
@@ -45,10 +44,10 @@ func NewStakingAdapter(eirene *core.Eirene, config *params.EireneConfig) *Stakin
 	}
 
 	return &StakingAdapter{
-		eirene:        eirene,
 		logger:        log.New("module", "staking"),
 		minStake:      big.NewInt(1000000000000000000), // 1 ETH
 		maxValidators: maxValidatorCount,
+		validatorSet:  validatorSet,
 	}
 }
 

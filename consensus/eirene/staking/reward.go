@@ -20,12 +20,17 @@ import (
 	"errors"
 	"math/big"
 	"sync"
+	"time"
 
+	"github.com/holiman/uint256"
 	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/consensus/eirene/core"
+	"github.com/zenanetwork/go-zenanet/core/state"
+	"github.com/zenanetwork/go-zenanet/core/tracing"
 	"github.com/zenanetwork/go-zenanet/core/types"
 	"github.com/zenanetwork/go-zenanet/ethdb"
 	"github.com/zenanetwork/go-zenanet/log"
+	"github.com/zenanetwork/go-zenanet/params"
 	"github.com/zenanetwork/go-zenanet/rlp"
 )
 
@@ -44,6 +49,14 @@ const (
 
 	// 보상 감소 비율 (%)
 	rewardReductionRatio = 20 // 20% 감소
+
+	// 보상 비율
+	ValidatorRewardRatio  = 0.70 // 검증자 보상 비율 (70%)
+	DelegatorRewardRatio  = 0.20 // 위임자 보상 비율 (20%)
+	CommunityRewardRatio  = 0.10 // 커뮤니티 기금 보상 비율 (10%)
+
+	// 보상 감소 주기
+	RewardHalvingBlocks = 1000000 // 100만 블록마다 보상 반감
 )
 
 // RewardAdapter는 보상 관리를 위한 어댑터입니다.
@@ -281,5 +294,345 @@ func (a *RewardAdapter) WithdrawFromCommunityFund(recipient common.Address, amou
 		return err
 	}
 
+	return nil
+}
+
+// RewardManager는 보상 분배 시스템을 관리합니다
+type RewardManager struct {
+	config       *params.EireneConfig // 합의 엔진 구성
+	validatorSet *ValidatorSet        // 검증자 집합
+
+	// 보상 추적
+	accumulatedRewards map[common.Address]*big.Int // 검증자별 누적 보상
+	communityFund      *big.Int                    // 커뮤니티 기금
+
+	// 보상 분배 이력
+	distributionHistory []RewardDistribution // 보상 분배 이력
+
+	lock sync.RWMutex // 동시성 제어를 위한 잠금
+}
+
+// RewardDistribution은 보상 분배 정보를 나타냅니다
+type RewardDistribution struct {
+	BlockNumber    uint64         // 블록 번호
+	Timestamp      time.Time      // 타임스탬프
+	TotalReward    *big.Int       // 총 보상
+	ValidatorReward *big.Int      // 검증자 보상
+	DelegatorReward *big.Int      // 위임자 보상
+	CommunityReward *big.Int      // 커뮤니티 기금 보상
+	Validator      common.Address // 검증자 주소
+}
+
+// NewRewardManager는 새로운 보상 관리자를 생성합니다
+func NewRewardManager(config *params.EireneConfig, validatorSet *ValidatorSet) *RewardManager {
+	return &RewardManager{
+		config:             config,
+		validatorSet:       validatorSet,
+		accumulatedRewards: make(map[common.Address]*big.Int),
+		communityFund:      big.NewInt(0),
+		distributionHistory: make([]RewardDistribution, 0),
+	}
+}
+
+// CalculateBlockReward는 블록 번호에 따라 블록 보상을 계산합니다
+func (rm *RewardManager) CalculateBlockReward(blockNumber uint64) *big.Int {
+	// 기본 보상
+	baseReward := new(big.Int).Mul(big.NewInt(1), big.NewInt(1e18)) // 1 토큰
+
+	// 블록 보상 감소 로직 (매 100만 블록마다 반감)
+	halvings := blockNumber / RewardHalvingBlocks
+	
+	if halvings > 0 {
+		// 2^halvings로 나누기
+		divisor := new(big.Int).Exp(big.NewInt(2), big.NewInt(int64(halvings)), nil)
+		baseReward = baseReward.Div(baseReward, divisor)
+	}
+
+	return baseReward
+}
+
+// DistributeRewards는 블록 생성 및 검증에 대한 보상을 분배합니다
+func (rm *RewardManager) DistributeRewards(blockNumber uint64, validator common.Address, state *state.StateDB) error {
+	rm.lock.Lock()
+	defer rm.lock.Unlock()
+
+	// 블록 보상 계산
+	blockReward := rm.CalculateBlockReward(blockNumber)
+
+	// 검증자 보상 (70%)
+	validatorReward := new(big.Int).Mul(blockReward, big.NewInt(int64(ValidatorRewardRatio*100)))
+	validatorReward = validatorReward.Div(validatorReward, big.NewInt(100))
+
+	// 위임자 보상 (20%)
+	delegatorReward := new(big.Int).Mul(blockReward, big.NewInt(int64(DelegatorRewardRatio*100)))
+	delegatorReward = delegatorReward.Div(delegatorReward, big.NewInt(100))
+
+	// 커뮤니티 기금 보상 (10%)
+	communityReward := new(big.Int).Mul(blockReward, big.NewInt(int64(CommunityRewardRatio*100)))
+	communityReward = communityReward.Div(communityReward, big.NewInt(100))
+
+	// 검증자 보상 지급
+	v := rm.validatorSet.GetValidatorByAddress(validator)
+	if v == nil {
+		return ErrValidatorNotFound
+	}
+
+	// 검증자 수수료 계산
+	validator_obj, ok := v.(*Validator)
+	if !ok {
+		return errors.New("invalid validator type")
+	}
+	commissionRate := float64(validator_obj.Commission) / 10000
+
+	// 검증자에게 보상 지급 (검증자 보상 + 수수료)
+	totalValidatorReward := new(big.Int).Add(validatorReward, new(big.Int).Mul(delegatorReward, big.NewInt(int64(commissionRate*10000))))
+	if _, ok := rm.accumulatedRewards[validator]; !ok {
+		rm.accumulatedRewards[validator] = big.NewInt(0)
+	}
+	rm.accumulatedRewards[validator] = new(big.Int).Add(rm.accumulatedRewards[validator], totalValidatorReward)
+	
+	// big.Int를 uint256.Int로 변환
+	uint256TotalValidatorReward := new(uint256.Int).SetBytes(totalValidatorReward.Bytes())
+	state.AddBalance(validator, uint256TotalValidatorReward, tracing.BalanceChangeUnspecified)
+
+	// 위임자 보상 분배
+	rm.distributeDelegatorRewards(validator, delegatorReward, state)
+
+	// 커뮤니티 기금에 보상 추가
+	rm.communityFund = new(big.Int).Add(rm.communityFund, communityReward)
+	communityFundAddress := common.HexToAddress("0x0000000000000000000000000000000000000100") // 예시 주소
+	
+	// big.Int를 uint256.Int로 변환
+	uint256CommunityReward := new(uint256.Int).SetBytes(communityReward.Bytes())
+	state.AddBalance(communityFundAddress, uint256CommunityReward, tracing.BalanceChangeUnspecified)
+
+	// 보상 분배 이력 추가
+	rm.distributionHistory = append(rm.distributionHistory, RewardDistribution{
+		BlockNumber:     blockNumber,
+		Timestamp:       time.Now(),
+		TotalReward:     blockReward,
+		ValidatorReward: totalValidatorReward,
+		DelegatorReward: delegatorReward,
+		CommunityReward: communityReward,
+		Validator:       validator,
+	})
+
+	log.Debug("Rewards distributed", 
+		"block", blockNumber, 
+		"validator", validator, 
+		"total", blockReward, 
+		"validatorReward", totalValidatorReward, 
+		"delegatorReward", delegatorReward, 
+		"communityReward", communityReward)
+
+	return nil
+}
+
+// distributeDelegatorRewards는 위임자들에게 보상을 분배합니다
+func (rm *RewardManager) distributeDelegatorRewards(validator common.Address, totalReward *big.Int, state *state.StateDB) {
+	v := rm.validatorSet.GetValidatorByAddress(validator)
+	if v == nil {
+		return
+	}
+	
+	validator_obj, ok := v.(*Validator)
+	if !ok {
+		log.Error("Invalid validator type", "validator", validator)
+		return
+	}
+
+	// 총 위임 금액 계산
+	totalDelegation := big.NewInt(0)
+	for _, delegation := range validator_obj.Delegations {
+		totalDelegation = new(big.Int).Add(totalDelegation, delegation.Amount)
+	}
+	
+	// 위임이 없으면 검증자에게 모든 보상 지급
+	if totalDelegation.Cmp(big.NewInt(0)) == 0 {
+		if _, ok := rm.accumulatedRewards[validator]; !ok {
+			rm.accumulatedRewards[validator] = big.NewInt(0)
+		}
+		rm.accumulatedRewards[validator] = new(big.Int).Add(rm.accumulatedRewards[validator], totalReward)
+		
+		// big.Int를 uint256.Int로 변환
+		uint256TotalReward := new(uint256.Int).SetBytes(totalReward.Bytes())
+		state.AddBalance(validator, uint256TotalReward, tracing.BalanceChangeUnspecified)
+		return
+	}
+
+	// 위임자 보상 분배
+	for _, delegation := range validator_obj.Delegations {
+		// 위임 비율 계산
+		ratio := new(big.Float).Quo(
+			new(big.Float).SetInt(delegation.Amount),
+			new(big.Float).SetInt(totalDelegation),
+		)
+
+		// 위임자 보상 계산
+		rewardFloat := new(big.Float).Mul(ratio, new(big.Float).SetInt(totalReward))
+		delegatorReward, _ := rewardFloat.Int(nil)
+
+		// 위임자 보상 누적
+		if delegation.AccumulatedRewards == nil {
+			delegation.AccumulatedRewards = big.NewInt(0)
+		}
+		delegation.AccumulatedRewards = new(big.Int).Add(delegation.AccumulatedRewards, delegatorReward)
+
+		log.Debug("Delegator reward distributed", "delegator", delegation.Delegator, "validator", validator, "amount", delegatorReward)
+	}
+}
+
+// ClaimRewards는 검증자의 누적 보상을 청구합니다.
+func (rm *RewardManager) ClaimRewards(validator common.Address, state *state.StateDB) (*big.Int, error) {
+	rm.lock.Lock()
+	defer rm.lock.Unlock()
+
+	// 누적 보상 확인
+	rewards, ok := rm.accumulatedRewards[validator]
+	if !ok || rewards.Cmp(big.NewInt(0)) <= 0 {
+		return big.NewInt(0), nil
+	}
+
+	// 보상 지급
+	claimedRewards := new(big.Int).Set(rewards)
+	rm.accumulatedRewards[validator] = big.NewInt(0)
+	
+	// big.Int를 uint256.Int로 변환
+	uint256ClaimedRewards := new(uint256.Int).SetBytes(claimedRewards.Bytes())
+	state.AddBalance(validator, uint256ClaimedRewards, tracing.BalanceChangeUnspecified)
+
+	log.Debug("Validator rewards claimed", "validator", validator, "amount", claimedRewards)
+	return claimedRewards, nil
+}
+
+// ClaimDelegatorRewards는 위임자의 누적 보상을 청구합니다.
+func (rm *RewardManager) ClaimDelegatorRewards(delegator common.Address, validator common.Address, state *state.StateDB) (*big.Int, error) {
+	rm.lock.Lock()
+	defer rm.lock.Unlock()
+
+	// 검증자 확인
+	v := rm.validatorSet.GetValidatorByAddress(validator)
+	if v == nil {
+		return nil, ErrValidatorNotFound
+	}
+	
+	validator_obj, ok := v.(*Validator)
+	if !ok {
+		return nil, errors.New("invalid validator type")
+	}
+
+	// 위임 정보 확인
+	delegation, exists := validator_obj.Delegations[delegator]
+	if !exists {
+		return nil, errors.New("delegation not found")
+	}
+
+	// 보상 청구
+	claimedRewards := new(big.Int).Set(delegation.AccumulatedRewards)
+	delegation.AccumulatedRewards = big.NewInt(0)
+	
+	// big.Int를 uint256.Int로 변환
+	uint256ClaimedRewards := new(uint256.Int).SetBytes(claimedRewards.Bytes())
+	state.AddBalance(delegator, uint256ClaimedRewards, tracing.BalanceChangeUnspecified)
+
+	log.Debug("Delegator rewards claimed", "delegator", delegator, "validator", validator, "amount", claimedRewards)
+	return claimedRewards, nil
+}
+
+// GetAccumulatedRewards는 검증자의 누적 보상을 반환합니다
+func (rm *RewardManager) GetAccumulatedRewards(validator common.Address) *big.Int {
+	rm.lock.RLock()
+	defer rm.lock.RUnlock()
+
+	rewards, ok := rm.accumulatedRewards[validator]
+	if !ok {
+		return big.NewInt(0)
+	}
+	return new(big.Int).Set(rewards)
+}
+
+// GetDelegatorRewards는 위임자의 누적 보상을 반환합니다.
+func (rm *RewardManager) GetDelegatorRewards(delegator common.Address, validator common.Address) (*big.Int, error) {
+	rm.lock.RLock()
+	defer rm.lock.RUnlock()
+
+	// 검증자 확인
+	v := rm.validatorSet.GetValidatorByAddress(validator)
+	if v == nil {
+		return nil, ErrValidatorNotFound
+	}
+	
+	validator_obj, ok := v.(*Validator)
+	if !ok {
+		return nil, errors.New("invalid validator type")
+	}
+
+	// 위임 정보 확인
+	delegation, exists := validator_obj.Delegations[delegator]
+	if !exists {
+		return nil, errors.New("delegation not found")
+	}
+
+	return new(big.Int).Set(delegation.AccumulatedRewards), nil
+}
+
+// GetCommunityFund는 커뮤니티 기금의 잔액을 반환합니다
+func (rm *RewardManager) GetCommunityFund() *big.Int {
+	rm.lock.RLock()
+	defer rm.lock.RUnlock()
+
+	return new(big.Int).Set(rm.communityFund)
+}
+
+// GetRewardDistributionHistory는 보상 분배 이력을 반환합니다
+func (rm *RewardManager) GetRewardDistributionHistory(count int) []RewardDistribution {
+	rm.lock.RLock()
+	defer rm.lock.RUnlock()
+
+	historyLen := len(rm.distributionHistory)
+	if count <= 0 || count > historyLen {
+		count = historyLen
+	}
+
+	result := make([]RewardDistribution, count)
+	for i := 0; i < count; i++ {
+		result[i] = rm.distributionHistory[historyLen-count+i]
+	}
+	return result
+}
+
+// SaveToState는 보상 상태를 상태 DB에 저장합니다
+func (rm *RewardManager) SaveToState(state *state.StateDB) error {
+	rm.lock.Lock()
+	defer rm.lock.Unlock()
+	
+	// 누적 보상 저장
+	for addr, amount := range rm.accumulatedRewards {
+		rewardKey := append([]byte("reward-"), addr.Bytes()...)
+		state.SetState(common.HexToAddress("0x0000000000000000000000000000000000000200"), common.BytesToHash(rewardKey), common.BytesToHash(amount.Bytes()))
+	}
+	
+	// 커뮤니티 풀 금액 저장
+	communityPoolKey := []byte("community-pool")
+	state.SetState(common.HexToAddress("0x0000000000000000000000000000000000000200"), common.BytesToHash(communityPoolKey), common.BytesToHash(rm.communityFund.Bytes()))
+	
+	return nil
+}
+
+// LoadFromState는 상태 DB에서 보상 상태를 로드합니다
+func (rm *RewardManager) LoadFromState(state *state.StateDB) error {
+	rm.lock.Lock()
+	defer rm.lock.Unlock()
+	
+	// 커뮤니티 풀 금액 로드
+	communityPoolKey := []byte("community-pool")
+	communityPoolHash := state.GetState(common.HexToAddress("0x0000000000000000000000000000000000000200"), common.BytesToHash(communityPoolKey))
+	if communityPoolHash != (common.Hash{}) {
+		rm.communityFund = new(big.Int).SetBytes(communityPoolHash.Bytes())
+	}
+	
+	// 실제 구현에서는 모든 검증자의 누적 보상을 로드해야 함
+	// 여기서는 간단한 예시만 제공
+	
 	return nil
 }

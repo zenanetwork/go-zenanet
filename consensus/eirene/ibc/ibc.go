@@ -17,38 +17,40 @@
 package ibc
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
-	"time"
+	"sync"
 
 	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/ethdb"
 	"github.com/zenanetwork/go-zenanet/log"
-	"github.com/zenanetwork/go-zenanet/rlp"
 )
 
-// IBC 관련 상수
+// 상수 정의
 const (
-	// 패킷 유형
-	IBCPacketTypeTransfer        = 0 // 자산 전송
-	IBCPacketTypeAcknowledgement = 1 // 확인 응답
-	IBCPacketTypeTimeout         = 2 // 타임아웃
-
 	// 채널 상태
-	IBCChannelStateInit   = 0 // 초기화
-	IBCChannelStateOpen   = 1 // 열림
-	IBCChannelStateClosed = 2 // 닫힘
+	ChannelStateInit     = 0
+	ChannelStateOpen     = 1
+	ChannelStateClosed   = 2
+
+	// 연결 상태
+	ConnectionStateInit  = 0
+	ConnectionStateOpen  = 1
+	ConnectionStateClosed = 2
 
 	// 클라이언트 상태
-	IBCClientStateActive  = 0 // 활성
-	IBCClientStateExpired = 1 // 만료
-	IBCClientStateFrozen  = 2 // 동결
+	ClientStateActive    = 0
+	ClientStateExpired   = 1
+	ClientStateFrozen    = 2
 
-	// 타임아웃 기간 (블록 수)
-	IBCDefaultTimeoutPeriod = 10000 // 약 1.7일 (15초 블록 기준)
+	// 기본 타임아웃
+	DefaultTimeoutHeight = 1000 // 기본 타임아웃 높이 (블록 수)
+	DefaultTimeoutTime   = 3600 // 기본 타임아웃 시간 (초)
 )
 
-// IBCPacket은 IBC 패킷을 나타냅니다.
+// IBCPacket은 IBC 패킷을 나타냅니다
 type IBCPacket struct {
 	Sequence         uint64 `json:"sequence"`         // 패킷 시퀀스 번호
 	SourcePort       string `json:"sourcePort"`       // 소스 포트
@@ -60,7 +62,7 @@ type IBCPacket struct {
 	TimeoutTimestamp uint64 `json:"timeoutTimestamp"` // 타임아웃 타임스탬프
 }
 
-// IBCTransferData는 자산 전송 데이터를 나타냅니다.
+// IBCTransferData는 토큰 전송 데이터를 나타냅니다
 type IBCTransferData struct {
 	Token    common.Address `json:"token"`    // 토큰 주소
 	Amount   *big.Int       `json:"amount"`   // 전송 금액
@@ -69,7 +71,7 @@ type IBCTransferData struct {
 	Memo     string         `json:"memo"`     // 메모
 }
 
-// IBCAcknowledgementData는 확인 응답 데이터를 나타냅니다.
+// IBCAcknowledgementData는 패킷 확인 응답 데이터를 나타냅니다
 type IBCAcknowledgementData struct {
 	OriginalSequence uint64 `json:"originalSequence"` // 원본 패킷 시퀀스 번호
 	Success          bool   `json:"success"`          // 성공 여부
@@ -77,7 +79,7 @@ type IBCAcknowledgementData struct {
 	Result           []byte `json:"result"`           // 결과 데이터 (성공 시)
 }
 
-// IBCChannel은 IBC 채널을 나타냅니다.
+// IBCChannel은 IBC 채널을 나타냅니다
 type IBCChannel struct {
 	PortID                string `json:"portId"`                // 포트 ID
 	ChannelID             string `json:"channelId"`             // 채널 ID
@@ -91,7 +93,7 @@ type IBCChannel struct {
 	NextSequenceAck       uint64 `json:"nextSequenceAck"`       // 다음 확인 시퀀스 번호
 }
 
-// IBCConnection은 IBC 연결을 나타냅니다.
+// IBCConnection은 IBC 연결을 나타냅니다
 type IBCConnection struct {
 	ID                       string   `json:"id"`                       // 연결 ID
 	ClientID                 string   `json:"clientId"`                 // 클라이언트 ID
@@ -101,7 +103,7 @@ type IBCConnection struct {
 	Versions                 []string `json:"versions"`                 // 연결 버전
 }
 
-// IBCClient는 IBC 클라이언트를 나타냅니다.
+// IBCClient는 IBC 클라이언트를 나타냅니다
 type IBCClient struct {
 	ID             string `json:"id"`             // 클라이언트 ID
 	Type           string `json:"type"`           // 클라이언트 유형 (tendermint, solo-machine 등)
@@ -111,7 +113,7 @@ type IBCClient struct {
 	ConsensusState []byte `json:"consensusState"` // 합의 상태
 }
 
-// IBCState는 IBC 상태를 나타냅니다.
+// IBCState는 IBC 상태를 나타냅니다
 type IBCState struct {
 	Clients          map[string]*IBCClient              `json:"clients"`          // 클라이언트 맵
 	Connections      map[string]*IBCConnection          `json:"connections"`      // 연결 맵
@@ -124,9 +126,11 @@ type IBCState struct {
 	TotalPacketsReceived     uint64 `json:"totalPacketsReceived"`     // 총 수신 패킷 수
 	TotalPacketsAcknowledged uint64 `json:"totalPacketsAcknowledged"` // 총 확인 패킷 수
 	TotalPacketsTimedOut     uint64 `json:"totalPacketsTimedOut"`     // 총 타임아웃 패킷 수
+
+	lock sync.RWMutex // 동시성 제어를 위한 잠금
 }
 
-// newIBCState는 새로운 IBC 상태를 생성합니다.
+// newIBCState는 새로운 IBC 상태를 생성합니다
 func newIBCState() *IBCState {
 	return &IBCState{
 		Clients:          make(map[string]*IBCClient),
@@ -137,67 +141,81 @@ func newIBCState() *IBCState {
 	}
 }
 
-// loadIBCState는 데이터베이스에서 IBC 상태를 로드합니다.
+// loadIBCState는 데이터베이스에서 IBC 상태를 로드합니다
 func loadIBCState(db ethdb.Database) (*IBCState, error) {
-	data, err := db.Get([]byte("eirene-ibc"))
+	data, err := db.Get([]byte("ibc-state"))
 	if err != nil {
-		// 데이터가 없으면 새로운 상태 생성
-		return newIBCState(), nil
+		// 상태가 없으면 새로 생성
+		if err == errors.New("not found") {
+			return newIBCState(), nil
+		}
+		return nil, err
 	}
 
 	var state IBCState
-	if err := rlp.DecodeBytes(data, &state); err != nil {
+	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, err
 	}
 
 	return &state, nil
 }
 
-// store는 IBC 상태를 데이터베이스에 저장합니다.
+// store는 IBC 상태를 데이터베이스에 저장합니다
 func (is *IBCState) store(db ethdb.Database) error {
-	data, err := rlp.EncodeToBytes(is)
+	is.lock.RLock()
+	defer is.lock.RUnlock()
+
+	data, err := json.Marshal(is)
 	if err != nil {
 		return err
 	}
 
-	return db.Put([]byte("eirene-ibc"), data)
+	return db.Put([]byte("ibc-state"), data)
 }
 
-// createClient는 새로운 IBC 클라이언트를 생성합니다.
+// createClient는 새로운 IBC 클라이언트를 생성합니다
 func (is *IBCState) createClient(id string, clientType string, consensusState []byte, trustingPeriod uint64) (*IBCClient, error) {
+	is.lock.Lock()
+	defer is.lock.Unlock()
+
 	// 클라이언트 ID 중복 확인
 	if _, exists := is.Clients[id]; exists {
 		return nil, errors.New("client already exists")
+	}
+
+	// 클라이언트 유형 확인
+	if clientType != "tendermint" && clientType != "solo-machine" {
+		return nil, errors.New("unsupported client type")
 	}
 
 	// 클라이언트 생성
 	client := &IBCClient{
 		ID:             id,
 		Type:           clientType,
-		State:          IBCClientStateActive,
+		State:          ClientStateActive,
 		LatestHeight:   0,
 		TrustingPeriod: trustingPeriod,
 		ConsensusState: consensusState,
 	}
 
-	// 클라이언트 저장
 	is.Clients[id] = client
-
 	log.Info("IBC client created", "id", id, "type", clientType)
-
 	return client, nil
 }
 
-// updateClient는 IBC 클라이언트를 업데이트합니다.
+// updateClient는 IBC 클라이언트를 업데이트합니다
 func (is *IBCState) updateClient(id string, height uint64, consensusState []byte) error {
-	// 클라이언트 확인
+	is.lock.Lock()
+	defer is.lock.Unlock()
+
+	// 클라이언트 존재 확인
 	client, exists := is.Clients[id]
 	if !exists {
 		return errors.New("client not found")
 	}
 
 	// 클라이언트 상태 확인
-	if client.State != IBCClientStateActive {
+	if client.State != ClientStateActive {
 		return errors.New("client is not active")
 	}
 
@@ -211,25 +229,27 @@ func (is *IBCState) updateClient(id string, height uint64, consensusState []byte
 	client.ConsensusState = consensusState
 
 	log.Info("IBC client updated", "id", id, "height", height)
-
 	return nil
 }
 
-// createConnection은 새로운 IBC 연결을 생성합니다.
+// createConnection은 새로운 IBC 연결을 생성합니다
 func (is *IBCState) createConnection(id string, clientID string, counterpartyClientID string, counterpartyConnectionID string, version string) (*IBCConnection, error) {
+	is.lock.Lock()
+	defer is.lock.Unlock()
+
 	// 연결 ID 중복 확인
 	if _, exists := is.Connections[id]; exists {
 		return nil, errors.New("connection already exists")
 	}
 
-	// 클라이언트 확인
+	// 클라이언트 존재 확인
 	client, exists := is.Clients[clientID]
 	if !exists {
 		return nil, errors.New("client not found")
 	}
 
 	// 클라이언트 상태 확인
-	if client.State != IBCClientStateActive {
+	if client.State != ClientStateActive {
 		return nil, errors.New("client is not active")
 	}
 
@@ -239,55 +259,56 @@ func (is *IBCState) createConnection(id string, clientID string, counterpartyCli
 		ClientID:                 clientID,
 		CounterpartyClientID:     counterpartyClientID,
 		CounterpartyConnectionID: counterpartyConnectionID,
-		State:                    IBCChannelStateInit,
+		State:                    ConnectionStateInit,
 		Versions:                 []string{version},
 	}
 
-	// 연결 저장
 	is.Connections[id] = connection
-
-	log.Info("IBC connection created", "id", id, "clientId", clientID)
-
+	log.Info("IBC connection created", "id", id, "clientID", clientID)
 	return connection, nil
 }
 
-// openConnection은 IBC 연결을 엽니다.
+// openConnection은 IBC 연결을 열기 상태로 변경합니다
 func (is *IBCState) openConnection(id string) error {
-	// 연결 확인
+	is.lock.Lock()
+	defer is.lock.Unlock()
+
+	// 연결 존재 확인
 	connection, exists := is.Connections[id]
 	if !exists {
 		return errors.New("connection not found")
 	}
 
 	// 연결 상태 확인
-	if connection.State != IBCChannelStateInit {
+	if connection.State != ConnectionStateInit {
 		return errors.New("connection is not in init state")
 	}
 
-	// 연결 열기
-	connection.State = IBCChannelStateOpen
-
+	// 연결 상태 변경
+	connection.State = ConnectionStateOpen
 	log.Info("IBC connection opened", "id", id)
-
 	return nil
 }
 
-// createChannel은 새로운 IBC 채널을 생성합니다.
+// createChannel은 새로운 IBC 채널을 생성합니다
 func (is *IBCState) createChannel(portID string, channelID string, connectionID string, counterpartyPortID string, counterpartyChannelID string, version string) (*IBCChannel, error) {
+	is.lock.Lock()
+	defer is.lock.Unlock()
+
 	// 채널 ID 중복 확인
 	channelKey := portID + "/" + channelID
 	if _, exists := is.Channels[channelKey]; exists {
 		return nil, errors.New("channel already exists")
 	}
 
-	// 연결 확인
+	// 연결 존재 확인
 	connection, exists := is.Connections[connectionID]
 	if !exists {
 		return nil, errors.New("connection not found")
 	}
 
 	// 연결 상태 확인
-	if connection.State != IBCChannelStateOpen {
+	if connection.State != ConnectionStateOpen {
 		return nil, errors.New("connection is not open")
 	}
 
@@ -297,7 +318,7 @@ func (is *IBCState) createChannel(portID string, channelID string, connectionID 
 		ChannelID:             channelID,
 		CounterpartyPortID:    counterpartyPortID,
 		CounterpartyChannelID: counterpartyChannelID,
-		State:                 IBCChannelStateInit,
+		State:                 ChannelStateInit,
 		Version:               version,
 		ConnectionID:          connectionID,
 		NextSequenceSend:      1,
@@ -305,17 +326,17 @@ func (is *IBCState) createChannel(portID string, channelID string, connectionID 
 		NextSequenceAck:       1,
 	}
 
-	// 채널 저장
 	is.Channels[channelKey] = channel
-
-	log.Info("IBC channel created", "portId", portID, "channelId", channelID)
-
+	log.Info("IBC channel created", "port", portID, "channel", channelID, "connection", connectionID)
 	return channel, nil
 }
 
-// openChannel은 IBC 채널을 엽니다.
+// openChannel은 IBC 채널을 열기 상태로 변경합니다
 func (is *IBCState) openChannel(portID string, channelID string) error {
-	// 채널 확인
+	is.lock.Lock()
+	defer is.lock.Unlock()
+
+	// 채널 존재 확인
 	channelKey := portID + "/" + channelID
 	channel, exists := is.Channels[channelKey]
 	if !exists {
@@ -323,21 +344,22 @@ func (is *IBCState) openChannel(portID string, channelID string) error {
 	}
 
 	// 채널 상태 확인
-	if channel.State != IBCChannelStateInit {
+	if channel.State != ChannelStateInit {
 		return errors.New("channel is not in init state")
 	}
 
-	// 채널 열기
-	channel.State = IBCChannelStateOpen
-
-	log.Info("IBC channel opened", "portId", portID, "channelId", channelID)
-
+	// 채널 상태 변경
+	channel.State = ChannelStateOpen
+	log.Info("IBC channel opened", "port", portID, "channel", channelID)
 	return nil
 }
 
-// closeChannel은 IBC 채널을 닫습니다.
+// closeChannel은 IBC 채널을 닫기 상태로 변경합니다
 func (is *IBCState) closeChannel(portID string, channelID string) error {
-	// 채널 확인
+	is.lock.Lock()
+	defer is.lock.Unlock()
+
+	// 채널 존재 확인
 	channelKey := portID + "/" + channelID
 	channel, exists := is.Channels[channelKey]
 	if !exists {
@@ -345,21 +367,22 @@ func (is *IBCState) closeChannel(portID string, channelID string) error {
 	}
 
 	// 채널 상태 확인
-	if channel.State != IBCChannelStateOpen {
+	if channel.State != ChannelStateOpen {
 		return errors.New("channel is not open")
 	}
 
-	// 채널 닫기
-	channel.State = IBCChannelStateClosed
-
-	log.Info("IBC channel closed", "portId", portID, "channelId", channelID)
-
+	// 채널 상태 변경
+	channel.State = ChannelStateClosed
+	log.Info("IBC channel closed", "port", portID, "channel", channelID)
 	return nil
 }
 
-// sendPacket은 IBC 패킷을 전송합니다.
+// sendPacket은 IBC 패킷을 전송합니다
 func (is *IBCState) sendPacket(sourcePort string, sourceChannel string, destPort string, destChannel string, data []byte, timeoutHeight uint64, timeoutTimestamp uint64) (*IBCPacket, error) {
-	// 채널 확인
+	is.lock.Lock()
+	defer is.lock.Unlock()
+
+	// 채널 존재 확인
 	channelKey := sourcePort + "/" + sourceChannel
 	channel, exists := is.Channels[channelKey]
 	if !exists {
@@ -367,8 +390,13 @@ func (is *IBCState) sendPacket(sourcePort string, sourceChannel string, destPort
 	}
 
 	// 채널 상태 확인
-	if channel.State != IBCChannelStateOpen {
+	if channel.State != ChannelStateOpen {
 		return nil, errors.New("channel is not open")
+	}
+
+	// 목적지 확인
+	if channel.CounterpartyPortID != destPort || channel.CounterpartyChannelID != destChannel {
+		return nil, errors.New("invalid destination")
 	}
 
 	// 패킷 생성
@@ -394,13 +422,15 @@ func (is *IBCState) sendPacket(sourcePort string, sourceChannel string, destPort
 	is.TotalPacketsSent++
 
 	log.Info("IBC packet sent", "sequence", sequence, "sourcePort", sourcePort, "sourceChannel", sourceChannel)
-
 	return packet, nil
 }
 
-// receivePacket은 IBC 패킷을 수신합니다.
+// receivePacket은 IBC 패킷을 수신합니다
 func (is *IBCState) receivePacket(packet *IBCPacket) error {
-	// 채널 확인
+	is.lock.Lock()
+	defer is.lock.Unlock()
+
+	// 채널 존재 확인
 	channelKey := packet.DestPort + "/" + packet.DestChannel
 	channel, exists := is.Channels[channelKey]
 	if !exists {
@@ -408,19 +438,18 @@ func (is *IBCState) receivePacket(packet *IBCPacket) error {
 	}
 
 	// 채널 상태 확인
-	if channel.State != IBCChannelStateOpen {
+	if channel.State != ChannelStateOpen {
 		return errors.New("channel is not open")
+	}
+
+	// 소스 확인
+	if channel.CounterpartyPortID != packet.SourcePort || channel.CounterpartyChannelID != packet.SourceChannel {
+		return errors.New("invalid source")
 	}
 
 	// 시퀀스 확인
 	if packet.Sequence != channel.NextSequenceRecv {
-		return errors.New("invalid sequence")
-	}
-
-	// 타임아웃 확인
-	currentTime := uint64(time.Now().Unix())
-	if packet.TimeoutTimestamp > 0 && currentTime >= packet.TimeoutTimestamp {
-		return errors.New("packet timed out")
+		return fmt.Errorf("invalid sequence: expected %d, got %d", channel.NextSequenceRecv, packet.Sequence)
 	}
 
 	// 시퀀스 증가
@@ -430,19 +459,21 @@ func (is *IBCState) receivePacket(packet *IBCPacket) error {
 	is.TotalPacketsReceived++
 
 	log.Info("IBC packet received", "sequence", packet.Sequence, "destPort", packet.DestPort, "destChannel", packet.DestChannel)
-
 	return nil
 }
 
-// acknowledgePacket은 IBC 패킷을 확인합니다.
+// acknowledgePacket은 IBC 패킷을 확인 응답합니다
 func (is *IBCState) acknowledgePacket(sequence uint64, success bool, result []byte, errorMsg string) error {
-	// 패킷 확인
+	is.lock.Lock()
+	defer is.lock.Unlock()
+
+	// 패킷 존재 확인
 	packet, exists := is.Packets[sequence]
 	if !exists {
 		return errors.New("packet not found")
 	}
 
-	// 채널 확인
+	// 채널 존재 확인
 	channelKey := packet.SourcePort + "/" + packet.SourceChannel
 	channel, exists := is.Channels[channelKey]
 	if !exists {
@@ -450,7 +481,7 @@ func (is *IBCState) acknowledgePacket(sequence uint64, success bool, result []by
 	}
 
 	// 채널 상태 확인
-	if channel.State != IBCChannelStateOpen {
+	if channel.State != ChannelStateOpen {
 		return errors.New("channel is not open")
 	}
 
@@ -465,6 +496,9 @@ func (is *IBCState) acknowledgePacket(sequence uint64, success bool, result []by
 	// 확인 응답 저장
 	is.Acknowledgements[sequence] = ack
 
+	// 패킷 삭제
+	delete(is.Packets, sequence)
+
 	// 시퀀스 증가
 	channel.NextSequenceAck++
 
@@ -472,19 +506,21 @@ func (is *IBCState) acknowledgePacket(sequence uint64, success bool, result []by
 	is.TotalPacketsAcknowledged++
 
 	log.Info("IBC packet acknowledged", "sequence", sequence, "success", success)
-
 	return nil
 }
 
-// timeoutPacket은 IBC 패킷을 타임아웃 처리합니다.
+// timeoutPacket은 IBC 패킷을 타임아웃 처리합니다
 func (is *IBCState) timeoutPacket(sequence uint64) error {
-	// 패킷 확인
+	is.lock.Lock()
+	defer is.lock.Unlock()
+
+	// 패킷 존재 확인
 	packet, exists := is.Packets[sequence]
 	if !exists {
 		return errors.New("packet not found")
 	}
 
-	// 채널 확인
+	// 채널 존재 확인
 	channelKey := packet.SourcePort + "/" + packet.SourceChannel
 	channel, exists := is.Channels[channelKey]
 	if !exists {
@@ -492,34 +528,24 @@ func (is *IBCState) timeoutPacket(sequence uint64) error {
 	}
 
 	// 채널 상태 확인
-	if channel.State != IBCChannelStateOpen {
+	if channel.State != ChannelStateOpen {
 		return errors.New("channel is not open")
 	}
 
-	// 타임아웃 확인
-	currentTime := uint64(time.Now().Unix())
-	currentHeight := uint64(0) // 실제 구현에서는 현재 블록 높이를 가져와야 함
+	// 패킷 삭제
+	delete(is.Packets, sequence)
 
-	if (packet.TimeoutHeight > 0 && currentHeight >= packet.TimeoutHeight) ||
-		(packet.TimeoutTimestamp > 0 && currentTime >= packet.TimeoutTimestamp) {
-		// 패킷 삭제
-		delete(is.Packets, sequence)
+	// 통계 업데이트
+	is.TotalPacketsTimedOut++
 
-		// 통계 업데이트
-		is.TotalPacketsTimedOut++
-
-		log.Info("IBC packet timed out", "sequence", sequence)
-
-		return nil
-	}
-
-	return errors.New("packet has not timed out")
+	log.Info("IBC packet timed out", "sequence", sequence)
+	return nil
 }
 
-// TransferToken은 IBC를 통해 토큰을 전송합니다.
+// TransferToken은 IBC를 통해 토큰을 전송합니다
 func TransferToken(ibcState *IBCState, sourcePort string, sourceChannel string, token common.Address, amount *big.Int, sender common.Address, receiver string, timeoutHeight uint64, timeoutTimestamp uint64) (*IBCPacket, error) {
 	// 전송 데이터 생성
-	transferData := &IBCTransferData{
+	transferData := IBCTransferData{
 		Token:    token,
 		Amount:   amount,
 		Sender:   sender,
@@ -528,13 +554,14 @@ func TransferToken(ibcState *IBCState, sourcePort string, sourceChannel string, 
 	}
 
 	// 데이터 인코딩
-	data, err := rlp.EncodeToBytes(transferData)
+	data, err := json.Marshal(transferData)
 	if err != nil {
 		return nil, err
 	}
 
-	// 채널 확인
-	channel, exists := ibcState.Channels[sourcePort+"/"+sourceChannel]
+	// 채널 존재 확인
+	channelKey := sourcePort + "/" + sourceChannel
+	channel, exists := ibcState.Channels[channelKey]
 	if !exists {
 		return nil, errors.New("channel not found")
 	}
@@ -553,65 +580,67 @@ func TransferToken(ibcState *IBCState, sourcePort string, sourceChannel string, 
 		return nil, err
 	}
 
-	// IBC 상태 저장
-	if err := ibcState.store(nil); err != nil {
-		log.Error("IBC 상태 저장 실패", "err", err)
-	}
-
+	log.Info("IBC token transfer initiated", 
+		"token", token.Hex(), 
+		"amount", amount.String(), 
+		"sender", sender.Hex(), 
+		"receiver", receiver)
 	return packet, nil
 }
 
-// ProcessIBCPackets는 IBC 패킷을 처리합니다.
+// ProcessIBCPackets는 IBC 패킷을 처리합니다
 func ProcessIBCPackets(ibcState *IBCState, currentBlock uint64, currentTime uint64) {
+	ibcState.lock.Lock()
+	defer ibcState.lock.Unlock()
+
 	// 타임아웃된 패킷 처리
 	for sequence, packet := range ibcState.Packets {
 		if (packet.TimeoutHeight > 0 && currentBlock >= packet.TimeoutHeight) ||
 			(packet.TimeoutTimestamp > 0 && currentTime >= packet.TimeoutTimestamp) {
 			// 패킷 타임아웃 처리
-			if err := ibcState.timeoutPacket(sequence); err != nil {
-				log.Error("패킷 타임아웃 처리 실패", "err", err)
-			}
+			delete(ibcState.Packets, sequence)
+			ibcState.TotalPacketsTimedOut++
+			log.Info("IBC packet timed out during processing", "sequence", sequence)
 		}
-	}
-
-	// IBC 상태 저장
-	if err := ibcState.store(nil); err != nil {
-		log.Error("IBC 상태 저장 실패", "err", err)
 	}
 }
 
-// IBCClient에 대한 getter 메서드 추가
+// GetState는 클라이언트 상태를 반환합니다
 func (c *IBCClient) GetState() uint8 {
 	return c.State
 }
 
+// GetLatestHeight는 클라이언트의 최신 높이를 반환합니다
 func (c *IBCClient) GetLatestHeight() uint64 {
 	return c.LatestHeight
 }
 
-// IBCConnection에 대한 getter 메서드 추가
+// GetVersions는 연결 버전을 반환합니다
 func (c *IBCConnection) GetVersions() []string {
 	return c.Versions
 }
 
-// IBCChannel에 대한 getter 메서드 추가
+// GetNextSequenceSend는 채널의 다음 전송 시퀀스 번호를 반환합니다
 func (c *IBCChannel) GetNextSequenceSend() uint64 {
 	return c.NextSequenceSend
 }
 
+// GetNextSequenceRecv는 채널의 다음 수신 시퀀스 번호를 반환합니다
 func (c *IBCChannel) GetNextSequenceRecv() uint64 {
 	return c.NextSequenceRecv
 }
 
+// GetNextSequenceAck는 채널의 다음 확인 시퀀스 번호를 반환합니다
 func (c *IBCChannel) GetNextSequenceAck() uint64 {
 	return c.NextSequenceAck
 }
 
-// IBCPacket에 대한 getter 메서드 추가
+// GetDestPort는 패킷의 목적지 포트를 반환합니다
 func (p *IBCPacket) GetDestPort() string {
 	return p.DestPort
 }
 
+// GetDestChannel는 패킷의 목적지 채널을 반환합니다
 func (p *IBCPacket) GetDestChannel() string {
 	return p.DestChannel
 }

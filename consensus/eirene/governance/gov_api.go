@@ -17,395 +17,551 @@
 package governance
 
 import (
-	"fmt"
+	"errors"
 	"math/big"
+	"time"
 
 	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/consensus"
 	"github.com/zenanetwork/go-zenanet/core/state"
 	"github.com/zenanetwork/go-zenanet/core/types"
+	"github.com/zenanetwork/go-zenanet/log"
 )
 
-// GovAPI는 거버넌스 관련 RPC API를 제공합니다.
-type GovAPI struct {
-	chain      consensus.ChainHeaderReader
-	govAdapter *GovAdapter
+// API는 거버넌스 시스템의 RPC API를 구현합니다
+type API struct {
+	chain       consensus.ChainHeaderReader
+	governance  *GovernanceManager
+	stateAt     func(common.Hash) (*state.StateDB, error)
+	currentBlock func() *types.Block
 }
 
-// ProposalResponse는 제안 정보를 반환하는 응답 구조체입니다.
-type ProposalResponse struct {
-	ID                     uint64            `json:"id"`
-	Title                  string            `json:"title"`
-	Description            string            `json:"description"`
-	ProposalType           string            `json:"proposal_type"`
-	ProposerAddress        common.Address    `json:"proposer_address"`
-	Status                 string            `json:"status"`
-	SubmitTime             uint64            `json:"submit_time"`
-	DepositEndTime         uint64            `json:"deposit_end_time"`
-	TotalDeposit           string            `json:"total_deposit"`
-	VotingStartTime        uint64            `json:"voting_start_time"`
-	VotingEndTime          uint64            `json:"voting_end_time"`
-	ExecutionTime          uint64            `json:"execution_time"`
-	Params                 map[string]string `json:"params,omitempty"`
-	UpgradeInfo            *UpgradeResponse  `json:"upgrade_info,omitempty"`
-	CommunityPoolSpendInfo *SpendResponse    `json:"community_pool_spend_info,omitempty"`
-}
-
-// UpgradeResponse는 업그레이드 정보를 반환하는 응답 구조체입니다.
-type UpgradeResponse struct {
-	Name   string `json:"name"`
-	Height uint64 `json:"height"`
-	Info   string `json:"info"`
-}
-
-// SpendResponse는 커뮤니티 풀 지출 정보를 반환하는 응답 구조체입니다.
-type SpendResponse struct {
-	Recipient common.Address `json:"recipient"`
-	Amount    string         `json:"amount"`
-}
-
-// VoteResponse는 투표 정보를 반환하는 응답 구조체입니다.
-type VoteResponse struct {
-	ProposalID uint64         `json:"proposal_id"`
-	Voter      common.Address `json:"voter"`
-	Option     string         `json:"option"`
-	Timestamp  uint64         `json:"timestamp"`
-}
-
-// DepositResponse는 보증금 정보를 반환하는 응답 구조체입니다.
-type DepositResponse struct {
-	ProposalID uint64         `json:"proposal_id"`
-	Depositor  common.Address `json:"depositor"`
-	Amount     string         `json:"amount"`
-	Timestamp  uint64         `json:"timestamp"`
-}
-
-// NewGovAPI는 새로운 GovAPI 인스턴스를 생성합니다.
-func NewGovAPI(govAdapter *GovAdapter, chain consensus.ChainHeaderReader) *GovAPI {
-	return &GovAPI{
-		chain:      chain,
-		govAdapter: govAdapter,
+// NewAPI는 새로운 거버넌스 API를 생성합니다
+func NewAPI(chain consensus.ChainHeaderReader, governance *GovernanceManager, stateAt func(common.Hash) (*state.StateDB, error), currentBlock func() *types.Block) *API {
+	return &API{
+		chain:       chain,
+		governance:  governance,
+		stateAt:     stateAt,
+		currentBlock: currentBlock,
 	}
 }
 
-// GetProposal은 제안 정보를 반환합니다.
-func (api *GovAPI) GetProposal(proposalID uint64) (*ProposalResponse, error) {
-	proposal, err := api.govAdapter.GetProposal(proposalID)
+// ProposalResponse는 제안 정보 응답을 나타냅니다
+type ProposalResponse struct {
+	ID          uint64         `json:"id"`
+	Type        string         `json:"type"`
+	Title       string         `json:"title"`
+	Description string         `json:"description"`
+	Proposer    common.Address `json:"proposer"`
+	SubmitTime  time.Time      `json:"submit_time"`
+	DepositEnd  time.Time      `json:"deposit_end"`
+	VotingStart time.Time      `json:"voting_start"`
+	VotingEnd   time.Time      `json:"voting_end"`
+	ExecuteTime time.Time      `json:"execute_time"`
+	Status      string         `json:"status"`
+	
+	TotalDeposit string                 `json:"total_deposit"`
+	Deposits     map[string]string      `json:"deposits"`
+	
+	YesVotes     string                 `json:"yes_votes"`
+	NoVotes      string                 `json:"no_votes"`
+	AbstainVotes string                 `json:"abstain_votes"`
+	VetoVotes    string                 `json:"veto_votes"`
+	Votes        map[string]string      `json:"votes"`
+	
+	Content      interface{}            `json:"content"`
+}
+
+// convertProposalToResponse는 제안을 응답 형식으로 변환합니다
+func convertProposalToResponse(proposal *Proposal) ProposalResponse {
+	// 보증금 변환
+	deposits := make(map[string]string)
+	for addr, amount := range proposal.Deposits {
+		deposits[addr.Hex()] = amount.String()
+	}
+	
+	// 투표 변환
+	votes := make(map[string]string)
+	for addr, vote := range proposal.Votes {
+		votes[addr.Hex()] = vote
+	}
+	
+	// 제안 내용 변환
+	var content interface{}
+	switch proposal.Type {
+	case ProposalTypeParameterChange:
+		paramChange := proposal.Content.(ParameterChangeProposal)
+		content = paramChange.Changes
+	case ProposalTypeUpgrade:
+		upgrade := proposal.Content.(UpgradeProposal)
+		content = map[string]interface{}{
+			"name":                 upgrade.Name,
+			"height":               upgrade.Height,
+			"info":                 upgrade.Info,
+			"upgrade_time":         upgrade.UpgradeTime,
+			"cancel_upgrade_height": upgrade.CancelUpgradeHeight,
+		}
+	case ProposalTypeFunding:
+		funding := proposal.Content.(FundingProposal)
+		content = map[string]interface{}{
+			"recipient": funding.Recipient.Hex(),
+			"amount":    funding.Amount.String(),
+			"reason":    funding.Reason,
+		}
+	case ProposalTypeText:
+		text := proposal.Content.(TextProposal)
+		content = map[string]interface{}{
+			"text": text.Text,
+		}
+	}
+	
+	return ProposalResponse{
+		ID:          proposal.ID,
+		Type:        proposal.Type,
+		Title:       proposal.Title,
+		Description: proposal.Description,
+		Proposer:    proposal.Proposer,
+		SubmitTime:  proposal.SubmitTime,
+		DepositEnd:  proposal.DepositEnd,
+		VotingStart: proposal.VotingStart,
+		VotingEnd:   proposal.VotingEnd,
+		ExecuteTime: proposal.ExecuteTime,
+		Status:      proposal.Status,
+		
+		TotalDeposit: proposal.TotalDeposit.String(),
+		Deposits:     deposits,
+		
+		YesVotes:     proposal.YesVotes.String(),
+		NoVotes:      proposal.NoVotes.String(),
+		AbstainVotes: proposal.AbstainVotes.String(),
+		VetoVotes:    proposal.VetoVotes.String(),
+		Votes:        votes,
+		
+		Content:      content,
+	}
+}
+
+// GetProposal은 제안 정보를 반환합니다
+func (api *API) GetProposal(proposalID uint64) (*ProposalResponse, error) {
+	proposal, err := api.governance.GetProposal(proposalID)
 	if err != nil {
 		return nil, err
 	}
-
-	return api.convertProposalToResponse(proposal), nil
+	
+	response := convertProposalToResponse(proposal)
+	return &response, nil
 }
 
-// GetProposals는 모든 제안 정보를 반환합니다.
-func (api *GovAPI) GetProposals() ([]*ProposalResponse, error) {
-	proposals := api.govAdapter.GetProposals()
-	responses := make([]*ProposalResponse, len(proposals))
-
+// GetProposals은 모든 제안 목록을 반환합니다
+func (api *API) GetProposals() ([]ProposalResponse, error) {
+	proposals := api.governance.GetProposals()
+	
+	responses := make([]ProposalResponse, len(proposals))
 	for i, proposal := range proposals {
-		responses[i] = api.convertProposalToResponse(proposal)
+		responses[i] = convertProposalToResponse(proposal)
 	}
-
+	
 	return responses, nil
 }
 
-// GetProposalsByStatus는 특정 상태의 제안 정보를 반환합니다.
-func (api *GovAPI) GetProposalsByStatus(status string) ([]*ProposalResponse, error) {
-	var statusEnum GovProposalStatus
-	switch status {
-	case "deposit_period":
-		statusEnum = GovProposalStatusDepositPeriod
-	case "voting_period":
-		statusEnum = GovProposalStatusVotingPeriod
-	case "passed":
-		statusEnum = GovProposalStatusPassed
-	case "rejected":
-		statusEnum = GovProposalStatusRejected
-	case "failed":
-		statusEnum = GovProposalStatusFailed
-	case "executed":
-		statusEnum = GovProposalStatusExecuted
-	default:
-		return nil, fmt.Errorf("invalid proposal status: %s", status)
+// GetProposalsByStatus는 특정 상태의 제안 목록을 반환합니다
+func (api *API) GetProposalsByStatus(status string) ([]ProposalResponse, error) {
+	// 상태 유효성 검사
+	if status != ProposalStatusDepositPeriod && 
+	   status != ProposalStatusVotingPeriod && 
+	   status != ProposalStatusPassed && 
+	   status != ProposalStatusRejected && 
+	   status != ProposalStatusExecuted {
+		return nil, errors.New("invalid proposal status")
 	}
-
-	proposals := api.govAdapter.GetProposalsByStatus(statusEnum)
-	responses := make([]*ProposalResponse, len(proposals))
-
+	
+	proposals := api.governance.GetProposalsByStatus(status)
+	
+	responses := make([]ProposalResponse, len(proposals))
 	for i, proposal := range proposals {
-		responses[i] = api.convertProposalToResponse(proposal)
+		responses[i] = convertProposalToResponse(proposal)
 	}
-
+	
 	return responses, nil
 }
 
-// SubmitProposal은 새로운 제안을 제출합니다.
-func (api *GovAPI) SubmitProposal(args SubmitProposalArgs) (uint64, error) {
-	// 상태 DB 가져오기
-	state, _, err := api.getStateDB()
+// SubmitProposalArgs는 제안 제출 인자를 나타냅니다
+type SubmitProposalArgs struct {
+	Type           string         `json:"type"`
+	Title          string         `json:"title"`
+	Description    string         `json:"description"`
+	Proposer       common.Address `json:"proposer"`
+	InitialDeposit string         `json:"initial_deposit"`
+	Content        interface{}    `json:"content"`
+}
+
+// SubmitProposal은 새로운 제안을 제출합니다
+func (api *API) SubmitProposal(args SubmitProposalArgs) (uint64, error) {
+	// 현재 상태 가져오기
+	currentBlock := api.currentBlock()
+	if currentBlock == nil {
+		return 0, errors.New("current block not available")
+	}
+	
+	state, err := api.stateAt(currentBlock.Root())
 	if err != nil {
 		return 0, err
 	}
-
-	// 제안 유형 변환
-	var proposalType GovProposalType
-	switch args.ProposalType {
-	case "parameter_change":
-		proposalType = GovProposalTypeParameterChange
-	case "software_upgrade":
-		proposalType = GovProposalTypeSoftwareUpgrade
-	case "community_pool_spend":
-		proposalType = GovProposalTypeCommunityPoolSpend
-	case "text":
-		proposalType = GovProposalTypeText
-	default:
-		return 0, fmt.Errorf("invalid proposal type: %s", args.ProposalType)
-	}
-
-	// 초기 보증금 변환
+	
+	// 초기 보증금 파싱
 	initialDeposit, ok := new(big.Int).SetString(args.InitialDeposit, 10)
 	if !ok {
-		return 0, fmt.Errorf("invalid initial deposit: %s", args.InitialDeposit)
+		return 0, errors.New("invalid initial deposit")
 	}
-
-	// 업그레이드 정보 변환
-	var upgradeInfo *GovUpgradeInfo
-	if args.UpgradeInfo != nil {
-		upgradeInfo = &GovUpgradeInfo{
-			Name:   args.UpgradeInfo.Name,
-			Height: args.UpgradeInfo.Height,
-			Info:   args.UpgradeInfo.Info,
-		}
-	}
-
-	// 커뮤니티 풀 지출 정보 변환
-	var communityPoolSpendInfo *GovCommunityPoolSpendInfo
-	if args.CommunityPoolSpendInfo != nil {
-		amount, ok := new(big.Int).SetString(args.CommunityPoolSpendInfo.Amount, 10)
+	
+	// 제안 내용 생성
+	var content ProposalContent
+	switch args.Type {
+	case ProposalTypeParameterChange:
+		// 매개변수 변경 제안
+		contentMap, ok := args.Content.(map[string]interface{})
 		if !ok {
-			return 0, fmt.Errorf("invalid community pool spend amount: %s", args.CommunityPoolSpendInfo.Amount)
+			return 0, errors.New("invalid parameter change content")
 		}
-		communityPoolSpendInfo = &GovCommunityPoolSpendInfo{
-			Recipient: args.CommunityPoolSpendInfo.Recipient,
+		
+		changesRaw, ok := contentMap["changes"].([]interface{})
+		if !ok {
+			return 0, errors.New("invalid parameter changes")
+		}
+		
+		changes := make([]ParamChange, len(changesRaw))
+		for i, changeRaw := range changesRaw {
+			changeMap, ok := changeRaw.(map[string]interface{})
+			if !ok {
+				return 0, errors.New("invalid parameter change")
+			}
+			
+			subspace, ok := changeMap["subspace"].(string)
+			if !ok {
+				return 0, errors.New("invalid parameter subspace")
+			}
+			
+			key, ok := changeMap["key"].(string)
+			if !ok {
+				return 0, errors.New("invalid parameter key")
+			}
+			
+			value, ok := changeMap["value"].(string)
+			if !ok {
+				return 0, errors.New("invalid parameter value")
+			}
+			
+			changes[i] = ParamChange{
+				Subspace: subspace,
+				Key:      key,
+				Value:    value,
+			}
+		}
+		
+		content = ParameterChangeProposal{
+			Changes: changes,
+		}
+		
+	case ProposalTypeUpgrade:
+		// 업그레이드 제안
+		contentMap, ok := args.Content.(map[string]interface{})
+		if !ok {
+			return 0, errors.New("invalid upgrade content")
+		}
+		
+		name, ok := contentMap["name"].(string)
+		if !ok {
+			return 0, errors.New("invalid upgrade name")
+		}
+		
+		heightFloat, ok := contentMap["height"].(float64)
+		if !ok {
+			return 0, errors.New("invalid upgrade height")
+		}
+		height := uint64(heightFloat)
+		
+		info, ok := contentMap["info"].(string)
+		if !ok {
+			return 0, errors.New("invalid upgrade info")
+		}
+		
+		upgradeTimeStr, ok := contentMap["upgrade_time"].(string)
+		if !ok {
+			return 0, errors.New("invalid upgrade time")
+		}
+		upgradeTime, err := time.Parse(time.RFC3339, upgradeTimeStr)
+		if err != nil {
+			return 0, errors.New("invalid upgrade time format")
+		}
+		
+		cancelHeightFloat, ok := contentMap["cancel_upgrade_height"].(float64)
+		if !ok {
+			cancelHeightFloat = 0
+		}
+		cancelHeight := uint64(cancelHeightFloat)
+		
+		content = UpgradeProposal{
+			Name:                name,
+			Height:              height,
+			Info:                info,
+			UpgradeTime:         upgradeTime,
+			CancelUpgradeHeight: cancelHeight,
+		}
+		
+	case ProposalTypeFunding:
+		// 자금 지원 제안
+		contentMap, ok := args.Content.(map[string]interface{})
+		if !ok {
+			return 0, errors.New("invalid funding content")
+		}
+		
+		recipientStr, ok := contentMap["recipient"].(string)
+		if !ok {
+			return 0, errors.New("invalid recipient")
+		}
+		recipient := common.HexToAddress(recipientStr)
+		
+		amountStr, ok := contentMap["amount"].(string)
+		if !ok {
+			return 0, errors.New("invalid amount")
+		}
+		amount, ok := new(big.Int).SetString(amountStr, 10)
+		if !ok {
+			return 0, errors.New("invalid amount format")
+		}
+		
+		reason, ok := contentMap["reason"].(string)
+		if !ok {
+			return 0, errors.New("invalid reason")
+		}
+		
+		content = FundingProposal{
+			Recipient: recipient,
 			Amount:    amount,
+			Reason:    reason,
 		}
-	}
-
-	// 제안 제출
-	return api.govAdapter.SubmitProposal(state, args.ProposerAddress, args.Title, args.Description, proposalType, initialDeposit, args.Params, upgradeInfo, communityPoolSpendInfo)
-}
-
-// Deposit은 제안에 보증금을 예치합니다.
-func (api *GovAPI) Deposit(args DepositArgs) error {
-	// 상태 DB 가져오기
-	state, _, err := api.getStateDB()
-	if err != nil {
-		return err
-	}
-
-	// 보증금 변환
-	amount, ok := new(big.Int).SetString(args.Amount, 10)
-	if !ok {
-		return fmt.Errorf("invalid deposit amount: %s", args.Amount)
-	}
-
-	// 보증금 예치
-	return api.govAdapter.Deposit(state, args.Depositor, args.ProposalID, amount)
-}
-
-// Vote는 제안에 투표합니다.
-func (api *GovAPI) Vote(args VoteArgs) error {
-	// 투표 옵션 변환
-	var option GovVoteOption
-	switch args.Option {
-	case "yes":
-		option = GovOptionYes
-	case "no":
-		option = GovOptionNo
-	case "no_with_veto":
-		option = GovOptionNoWithVeto
-	case "abstain":
-		option = GovOptionAbstain
+		
+	case ProposalTypeText:
+		// 텍스트 제안
+		contentMap, ok := args.Content.(map[string]interface{})
+		if !ok {
+			return 0, errors.New("invalid text content")
+		}
+		
+		text, ok := contentMap["text"].(string)
+		if !ok {
+			return 0, errors.New("invalid text")
+		}
+		
+		content = TextProposal{
+			Text: text,
+		}
+		
 	default:
-		return fmt.Errorf("invalid vote option: %s", args.Option)
+		return 0, errors.New("invalid proposal type")
 	}
-
-	// 투표
-	return api.govAdapter.Vote(args.Voter, args.ProposalID, option)
+	
+	// 제안 제출
+	proposalID, err := api.governance.SubmitProposal(
+		args.Type,
+		args.Title,
+		args.Description,
+		args.Proposer,
+		content,
+		initialDeposit,
+		state,
+	)
+	if err != nil {
+		return 0, err
+	}
+	
+	log.Info("Proposal submitted via API", "id", proposalID, "type", args.Type, "proposer", args.Proposer)
+	return proposalID, nil
 }
 
-// SubmitProposalArgs는 제안 제출 인자를 나타내는 구조체입니다.
-type SubmitProposalArgs struct {
-	ProposerAddress        common.Address          `json:"proposer_address"`
-	Title                  string                  `json:"title"`
-	Description            string                  `json:"description"`
-	ProposalType           string                  `json:"proposal_type"`
-	InitialDeposit         string                  `json:"initial_deposit"`
-	Params                 map[string]string       `json:"params,omitempty"`
-	UpgradeInfo            *UpgradeArgs            `json:"upgrade_info,omitempty"`
-	CommunityPoolSpendInfo *CommunityPoolSpendArgs `json:"community_pool_spend_info,omitempty"`
-}
-
-// UpgradeArgs는 업그레이드 인자를 나타내는 구조체입니다.
-type UpgradeArgs struct {
-	Name   string `json:"name"`
-	Height uint64 `json:"height"`
-	Info   string `json:"info"`
-}
-
-// CommunityPoolSpendArgs는 커뮤니티 풀 지출 인자를 나타내는 구조체입니다.
-type CommunityPoolSpendArgs struct {
-	Recipient common.Address `json:"recipient"`
-	Amount    string         `json:"amount"`
-}
-
-// DepositArgs는 보증금 예치 인자를 나타내는 구조체입니다.
+// DepositArgs는 보증금 추가 인자를 나타냅니다
 type DepositArgs struct {
-	Depositor  common.Address `json:"depositor"`
 	ProposalID uint64         `json:"proposal_id"`
+	Depositor  common.Address `json:"depositor"`
 	Amount     string         `json:"amount"`
 }
 
-// VoteArgs는 투표 인자를 나타내는 구조체입니다.
+// Deposit는 제안에 보증금을 추가합니다
+func (api *API) Deposit(args DepositArgs) (bool, error) {
+	// 현재 상태 가져오기
+	currentBlock := api.currentBlock()
+	if currentBlock == nil {
+		return false, errors.New("current block not available")
+	}
+	
+	state, err := api.stateAt(currentBlock.Root())
+	if err != nil {
+		return false, err
+	}
+	
+	// 보증금 파싱
+	amount, ok := new(big.Int).SetString(args.Amount, 10)
+	if !ok {
+		return false, errors.New("invalid amount")
+	}
+	
+	// 보증금 추가
+	err = api.governance.Deposit(args.ProposalID, args.Depositor, amount, state)
+	if err != nil {
+		return false, err
+	}
+	
+	log.Info("Deposit added via API", "proposal", args.ProposalID, "depositor", args.Depositor, "amount", args.Amount)
+	return true, nil
+}
+
+// VoteArgs는 투표 인자를 나타냅니다
 type VoteArgs struct {
-	Voter      common.Address `json:"voter"`
 	ProposalID uint64         `json:"proposal_id"`
+	Voter      common.Address `json:"voter"`
 	Option     string         `json:"option"`
 }
 
-// convertProposalToResponse는 내부 Proposal 구조체를 응답 구조체로 변환합니다.
-func (api *GovAPI) convertProposalToResponse(proposal *GovProposal) *ProposalResponse {
-	// 제안 유형 변환
-	var proposalType string
-	switch proposal.ProposalType {
-	case GovProposalTypeParameterChange:
-		proposalType = "parameter_change"
-	case GovProposalTypeSoftwareUpgrade:
-		proposalType = "software_upgrade"
-	case GovProposalTypeCommunityPoolSpend:
-		proposalType = "community_pool_spend"
-	case GovProposalTypeText:
-		proposalType = "text"
+// Vote는 제안에 투표합니다
+func (api *API) Vote(args VoteArgs) (bool, error) {
+	// 투표 옵션 유효성 검사
+	if args.Option != VoteOptionYes && 
+	   args.Option != VoteOptionNo && 
+	   args.Option != VoteOptionAbstain && 
+	   args.Option != VoteOptionVeto {
+		return false, errors.New("invalid vote option")
 	}
-
-	// 제안 상태 변환
-	var status string
-	switch proposal.Status {
-	case GovProposalStatusDepositPeriod:
-		status = "deposit_period"
-	case GovProposalStatusVotingPeriod:
-		status = "voting_period"
-	case GovProposalStatusPassed:
-		status = "passed"
-	case GovProposalStatusRejected:
-		status = "rejected"
-	case GovProposalStatusFailed:
-		status = "failed"
-	case GovProposalStatusExecuted:
-		status = "executed"
-	}
-
-	// 응답 생성
-	response := &ProposalResponse{
-		ID:              proposal.ID,
-		Title:           proposal.Title,
-		Description:     proposal.Description,
-		ProposalType:    proposalType,
-		ProposerAddress: proposal.ProposerAddress,
-		Status:          status,
-		SubmitTime:      uint64(proposal.SubmitTime.Unix()),
-		DepositEndTime:  uint64(proposal.DepositEndTime.Unix()),
-		TotalDeposit:    proposal.TotalDeposit.String(),
-		VotingStartTime: uint64(proposal.VotingStartTime.Unix()),
-		VotingEndTime:   uint64(proposal.VotingEndTime.Unix()),
-		ExecutionTime:   uint64(proposal.ExecutionTime.Unix()),
-		Params:          proposal.Params,
-	}
-
-	// 업그레이드 정보 추가
-	if proposal.UpgradeInfo != nil {
-		response.UpgradeInfo = &UpgradeResponse{
-			Name:   proposal.UpgradeInfo.Name,
-			Height: proposal.UpgradeInfo.Height,
-			Info:   proposal.UpgradeInfo.Info,
-		}
-	}
-
-	// 커뮤니티 풀 지출 정보 추가
-	if proposal.CommunityPoolSpendInfo != nil {
-		response.CommunityPoolSpendInfo = &SpendResponse{
-			Recipient: proposal.CommunityPoolSpendInfo.Recipient,
-			Amount:    proposal.CommunityPoolSpendInfo.Amount.String(),
-		}
-	}
-
-	return response
-}
-
-// getStateDB는 현재 블록의 상태 DB를 가져옵니다.
-func (api *GovAPI) getStateDB() (*state.StateDB, *types.Header, error) {
-	// 현재 블록 헤더 가져오기
-	header := api.chain.CurrentHeader()
-	if header == nil {
-		return nil, nil, fmt.Errorf("current header is nil")
-	}
-
-	// 상태 DB 가져오기
-	// 참고: 실제 구현에서는 StateDB에 접근하는 적절한 방법을 사용해야 합니다.
-	// 여기서는 임시로 nil을 반환합니다.
-	return nil, header, fmt.Errorf("StateDB access not implemented")
-}
-
-// GetVotes는 제안에 대한 투표 목록을 반환합니다.
-func (api *GovAPI) GetVotes(proposalID uint64) ([]*VoteResponse, error) {
-	proposal, err := api.govAdapter.GetProposal(proposalID)
+	
+	// 투표
+	err := api.governance.Vote(args.ProposalID, args.Voter, args.Option)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-
-	responses := make([]*VoteResponse, len(proposal.Votes))
-	for i, vote := range proposal.Votes {
-		// 투표 옵션 변환
-		var option string
-		switch vote.Option {
-		case GovOptionYes:
-			option = "yes"
-		case GovOptionNo:
-			option = "no"
-		case GovOptionNoWithVeto:
-			option = "no_with_veto"
-		case GovOptionAbstain:
-			option = "abstain"
-		}
-
-		responses[i] = &VoteResponse{
-			ProposalID: vote.ProposalID,
-			Voter:      vote.Voter,
-			Option:     option,
-			Timestamp:  uint64(vote.Timestamp.Unix()),
-		}
-	}
-
-	return responses, nil
+	
+	log.Info("Vote cast via API", "proposal", args.ProposalID, "voter", args.Voter, "option", args.Option)
+	return true, nil
 }
 
-// GetDeposits는 제안에 대한 보증금 목록을 반환합니다.
-func (api *GovAPI) GetDeposits(proposalID uint64) ([]*DepositResponse, error) {
-	proposal, err := api.govAdapter.GetProposal(proposalID)
+// EndVotingArgs는 투표 종료 인자를 나타냅니다
+type EndVotingArgs struct {
+	ProposalID uint64 `json:"proposal_id"`
+}
+
+// EndVoting은 투표 기간이 종료된 제안을 처리합니다
+func (api *API) EndVoting(args EndVotingArgs) (bool, error) {
+	// 현재 상태 가져오기
+	currentBlock := api.currentBlock()
+	if currentBlock == nil {
+		return false, errors.New("current block not available")
+	}
+	
+	state, err := api.stateAt(currentBlock.Root())
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-
-	responses := make([]*DepositResponse, len(proposal.Deposits))
-	for i, deposit := range proposal.Deposits {
-		responses[i] = &DepositResponse{
-			ProposalID: deposit.ProposalID,
-			Depositor:  deposit.Depositor,
-			Amount:     deposit.Amount.String(),
-			Timestamp:  uint64(deposit.Timestamp.Unix()),
-		}
+	
+	// 투표 종료
+	err = api.governance.EndVoting(args.ProposalID, state)
+	if err != nil {
+		return false, err
 	}
+	
+	log.Info("Voting ended via API", "proposal", args.ProposalID)
+	return true, nil
+}
 
-	return responses, nil
+// ExecuteProposalArgs는 제안 실행 인자를 나타냅니다
+type ExecuteProposalArgs struct {
+	ProposalID uint64 `json:"proposal_id"`
+}
+
+// ExecuteProposal은 통과된 제안을 실행합니다
+func (api *API) ExecuteProposal(args ExecuteProposalArgs) (bool, error) {
+	// 현재 상태 가져오기
+	currentBlock := api.currentBlock()
+	if currentBlock == nil {
+		return false, errors.New("current block not available")
+	}
+	
+	state, err := api.stateAt(currentBlock.Root())
+	if err != nil {
+		return false, err
+	}
+	
+	// 제안 실행
+	err = api.governance.ExecuteProposal(args.ProposalID, state)
+	if err != nil {
+		return false, err
+	}
+	
+	log.Info("Proposal executed via API", "proposal", args.ProposalID)
+	return true, nil
+}
+
+// GetParams는 거버넌스 매개변수를 반환합니다
+func (api *API) GetParams() map[string]interface{} {
+	params := api.governance.GetParams()
+	
+	return map[string]interface{}{
+		"min_deposit":     params.MinDeposit.String(),
+		"deposit_period":  params.DepositPeriod,
+		"voting_period":   params.VotingPeriod,
+		"quorum":          params.Quorum,
+		"threshold":       params.Threshold,
+		"veto_threshold":  params.VetoThreshold,
+		"execution_delay": params.ExecutionDelay,
+	}
+}
+
+// SetParamsArgs는 거버넌스 매개변수 설정 인자를 나타냅니다
+type SetParamsArgs struct {
+	MinDeposit     string  `json:"min_deposit"`
+	DepositPeriod  uint64  `json:"deposit_period"`
+	VotingPeriod   uint64  `json:"voting_period"`
+	Quorum         float64 `json:"quorum"`
+	Threshold      float64 `json:"threshold"`
+	VetoThreshold  float64 `json:"veto_threshold"`
+	ExecutionDelay uint64  `json:"execution_delay"`
+}
+
+// SetParams는 거버넌스 매개변수를 설정합니다
+func (api *API) SetParams(args SetParamsArgs) (bool, error) {
+	// 매개변수 파싱
+	minDeposit, ok := new(big.Int).SetString(args.MinDeposit, 10)
+	if !ok {
+		return false, errors.New("invalid min deposit")
+	}
+	
+	// 매개변수 유효성 검사
+	if args.DepositPeriod == 0 {
+		return false, errors.New("deposit period must be positive")
+	}
+	if args.VotingPeriod == 0 {
+		return false, errors.New("voting period must be positive")
+	}
+	if args.Quorum <= 0 || args.Quorum > 1 {
+		return false, errors.New("quorum must be between 0 and 1")
+	}
+	if args.Threshold <= 0 || args.Threshold > 1 {
+		return false, errors.New("threshold must be between 0 and 1")
+	}
+	if args.VetoThreshold <= 0 || args.VetoThreshold > 1 {
+		return false, errors.New("veto threshold must be between 0 and 1")
+	}
+	
+	// 매개변수 설정
+	params := &GovernanceParams{
+		MinDeposit:     minDeposit,
+		DepositPeriod:  args.DepositPeriod,
+		VotingPeriod:   args.VotingPeriod,
+		Quorum:         args.Quorum,
+		Threshold:      args.Threshold,
+		VetoThreshold:  args.VetoThreshold,
+		ExecutionDelay: args.ExecutionDelay,
+	}
+	
+	api.governance.SetParams(params)
+	
+	log.Info("Governance parameters updated via API")
+	return true, nil
 }

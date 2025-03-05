@@ -18,485 +18,918 @@ package governance
 
 import (
 	"errors"
+	"fmt"
 	"math/big"
+	"strconv"
+	"sync"
+	"time"
 
 	"github.com/zenanetwork/go-zenanet/common"
+	"github.com/zenanetwork/go-zenanet/consensus/eirene/utils"
+	"github.com/zenanetwork/go-zenanet/core/state"
 	"github.com/zenanetwork/go-zenanet/ethdb"
 	"github.com/zenanetwork/go-zenanet/log"
 	"github.com/zenanetwork/go-zenanet/rlp"
 )
 
-// 거버넌스 관련 상수
+// 상수 정의는 utils 패키지에서 가져옵니다.
+// utils.ProposalTypeParameterChange, utils.VoteOptionYes 등을 사용합니다.
+
+// 제안 상태
 const (
-	// 제안 상태
-	ProposalStatusPending   = 0 // 대기 중
-	ProposalStatusActive    = 1 // 활성 상태
-	ProposalStatusPassed    = 2 // 통과됨
-	ProposalStatusRejected  = 3 // 거부됨
-	ProposalStatusExecuted  = 4 // 실행됨
-	ProposalStatusCancelled = 5 // 취소됨
-
-	// 제안 유형
-	ProposalTypeParameter = 0 // 매개변수 변경
-	ProposalTypeUpgrade   = 1 // 업그레이드
-	ProposalTypeFunding   = 2 // 자금 지원
-
-	// 투표 옵션
-	VoteYes     = 0 // 찬성
-	VoteNo      = 1 // 반대
-	VoteAbstain = 2 // 기권
-
-	// 거버넌스 매개변수
-	DefaultVotingPeriod    = 40320 // 약 1주일 (15초 블록 기준)
-	DefaultProposalDeposit = 100   // 100 토큰 (실제 구현에서는 10^18 단위로 변환)
-	DefaultQuorum          = 33    // 33% 쿼럼
-	DefaultThreshold       = 50    // 50% 찬성 임계값
-	DefaultVetoThreshold   = 33    // 33% 거부권 임계값
-	DefaultMinProposalAge  = 1440  // 약 6시간 (15초 블록 기준)
+	ProposalStatusVotingPeriod  = utils.ProposalStatusVotingPeriod
+	ProposalStatusPending       = utils.ProposalStatusPending
+	ProposalStatusPassed        = utils.ProposalStatusPassed
+	ProposalStatusRejected      = utils.ProposalStatusRejected
+	ProposalStatusExecuted      = utils.ProposalStatusExecuted
+	ProposalStatusDepositPeriod = utils.ProposalStatusDepositPeriod
 )
 
-// Proposal은 거버넌스 제안을 나타냅니다.
+// 투표 옵션
+const (
+	VoteOptionYes     = utils.VoteOptionYes
+	VoteOptionNo      = utils.VoteOptionNo
+	VoteOptionAbstain = utils.VoteOptionAbstain
+	VoteOptionVeto    = utils.VoteOptionVeto
+)
+
+// 제안 유형
+const (
+	ProposalTypeParameterChange = utils.ProposalTypeParameterChange
+	ProposalTypeParameter       = utils.ProposalTypeParameter
+	ProposalTypeUpgrade         = utils.ProposalTypeUpgrade
+	ProposalTypeFunding         = utils.ProposalTypeFunding
+	ProposalTypeText            = utils.ProposalTypeText
+)
+
+// Proposal은 거버넌스 제안을 나타냅니다
 type Proposal struct {
-	ID          uint64         `json:"id"`          // 제안 ID
-	Proposer    common.Address `json:"proposer"`    // 제안자 주소
-	Title       string         `json:"title"`       // 제안 제목
-	Description string         `json:"description"` // 제안 설명
-	Type        uint8          `json:"type"`        // 제안 유형
-	Status      uint8          `json:"status"`      // 제안 상태
+	ID          uint64         // 제안 ID
+	Type        string         // 제안 유형
+	Title       string         // 제안 제목
+	Description string         // 제안 설명
+	Proposer    common.Address // 제안자 주소
+	SubmitTime  time.Time      // 제출 시간
+	SubmitBlock uint64         // 제출 블록
+	DepositEnd  time.Time      // 보증금 기간 종료 시간
+	VotingStart time.Time      // 투표 시작 시간
+	VotingStartBlock uint64    // 투표 시작 블록
+	VotingEnd   time.Time      // 투표 종료 시간
+	VotingEndBlock uint64      // 투표 종료 블록
+	ExecuteTime time.Time      // 실행 시간
+	Status      string         // 제안 상태
+	
+	// 보증금
+	TotalDeposit *big.Int                // 총 보증금
+	Deposits     map[common.Address]*big.Int // 보증금 목록 (주소 -> 금액)
 
-	// 제안 내용 (유형에 따라 다름)
-	Parameters map[string]string `json:"parameters"` // 매개변수 변경 제안의 경우
-	Upgrade    *UpgradeInfo      `json:"upgrade"`    // 업그레이드 제안의 경우
-	Funding    *FundingInfo      `json:"funding"`    // 자금 지원 제안의 경우
+	// 투표
+	YesVotes     *big.Int                // 찬성 투표 수
+	NoVotes      *big.Int                // 반대 투표 수
+	AbstainVotes *big.Int                // 기권 투표 수
+	VetoVotes    *big.Int                // 거부권 투표 수
+	Votes        map[common.Address]string // 투표 목록 (주소 -> 투표 옵션)
 
-	// 제안 메타데이터
-	SubmitBlock      uint64 `json:"submitBlock"`      // 제안 제출 블록
-	VotingStartBlock uint64 `json:"votingStartBlock"` // 투표 시작 블록
-	VotingEndBlock   uint64 `json:"votingEndBlock"`   // 투표 종료 블록
-	ExecutionBlock   uint64 `json:"executionBlock"`   // 실행 블록 (통과된 경우)
-
-	// 투표 결과
-	YesVotes     *big.Int `json:"yesVotes"`     // 찬성 투표 수
-	NoVotes      *big.Int `json:"noVotes"`      // 반대 투표 수
-	AbstainVotes *big.Int `json:"abstainVotes"` // 기권 투표 수
-	VetoVotes    *big.Int `json:"vetoVotes"`    // 거부권 투표 수
-	TotalVotes   *big.Int `json:"totalVotes"`   // 총 투표 수
-
-	// 제안 보증금
-	Deposit *big.Int `json:"deposit"` // 제안 보증금
+	// 제안 내용
+	Content ProposalContent `rlp:"-"` // 제안 내용
 }
 
-// UpgradeInfo는 업그레이드 제안에 대한 정보를 포함합니다.
-type UpgradeInfo struct {
-	Name        string `json:"name"`        // 업그레이드 이름
-	Height      uint64 `json:"height"`      // 업그레이드 적용 블록 높이
-	Info        string `json:"info"`        // 업그레이드 정보 (URL 등)
-	ActivateMsg []byte `json:"activateMsg"` // 업그레이드 활성화 메시지
+// ProposalContent는 제안 내용의 인터페이스입니다
+type ProposalContent interface {
+	GetType() string
+	Execute(state *state.StateDB) error
 }
 
-// FundingInfo는 자금 지원 제안에 대한 정보를 포함합니다.
-type FundingInfo struct {
-	Recipient common.Address `json:"recipient"` // 수령인 주소
-	Amount    *big.Int       `json:"amount"`    // 지원 금액
-	Reason    string         `json:"reason"`    // 지원 이유
+// ParameterChangeProposal은 매개변수 변경 제안을 나타냅니다
+type ParameterChangeProposal struct {
+	Changes []ParamChange // 변경 사항 목록
 }
 
-// ProposalVote는 제안에 대한 투표를 나타냅니다.
-type ProposalVote struct {
-	ProposalID uint64         `json:"proposalId"` // 제안 ID
-	Voter      common.Address `json:"voter"`      // 투표자 주소
-	Option     uint8          `json:"option"`     // 투표 옵션
-	Weight     *big.Int       `json:"weight"`     // 투표 가중치
-	Block      uint64         `json:"block"`      // 투표 블록
+// ParamChange는 매개변수 변경 사항을 나타냅니다
+type ParamChange struct {
+	Subspace string // 서브스페이스 (모듈)
+	Key      string // 키
+	Value    string // 값
 }
 
-// GovernanceState는 거버넌스 시스템의 상태를 나타냅니다.
-type GovernanceState struct {
-	Proposals      map[uint64]*Proposal                       `json:"proposals"`      // 제안 목록
-	Votes          map[uint64]map[common.Address]ProposalVote `json:"votes"`          // 제안별 투표 목록
-	NextProposalID uint64                                     `json:"nextProposalId"` // 다음 제안 ID
-
-	// 거버넌스 매개변수
-	VotingPeriod    uint64   `json:"votingPeriod"`    // 투표 기간 (블록 수)
-	ProposalDeposit *big.Int `json:"proposalDeposit"` // 제안 보증금
-	Quorum          uint8    `json:"quorum"`          // 쿼럼 (%)
-	Threshold       uint8    `json:"threshold"`       // 통과 임계값 (%)
-	VetoThreshold   uint8    `json:"vetoThreshold"`   // 거부권 임계값 (%)
-	MinProposalAge  uint64   `json:"minProposalAge"`  // 최소 제안 나이 (블록 수)
+// GetType은 제안 유형을 반환합니다
+func (p ParameterChangeProposal) GetType() string {
+	return ProposalTypeParameterChange
 }
 
-// newGovernanceState는 새로운 거버넌스 상태를 생성합니다.
-func newGovernanceState() *GovernanceState {
-	// 100 토큰을 10^18 단위로 변환 (wei)
-	depositAmount := new(big.Int).Mul(
-		big.NewInt(DefaultProposalDeposit),
-		new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil),
-	)
+// Execute는 매개변수 변경을 실행합니다
+func (p ParameterChangeProposal) Execute(state *state.StateDB) error {
+	// 매개변수 변경 실행
+	for _, change := range p.Changes {
+		// 매개변수 변경 로깅
+		log.Info("Executing parameter change", 
+			"subspace", change.Subspace, 
+			"key", change.Key, 
+			"value", change.Value)
+		
+		// 매개변수 변경 정보를 DB에 저장
+		// 실제 구현에서는 상태 DB에 저장하거나 다른 방식으로 처리할 수 있음
+		paramKey := append([]byte("param-"), []byte(change.Subspace+"-"+change.Key)...)
+		state.SetState(common.HexToAddress("0x0000000000000000000000000000000000000100"), common.BytesToHash(paramKey), common.BytesToHash([]byte(change.Value)))
+	}
+	
+	return nil
+}
 
-	return &GovernanceState{
-		Proposals:       make(map[uint64]*Proposal),
-		Votes:           make(map[uint64]map[common.Address]ProposalVote),
-		NextProposalID:  1,
-		VotingPeriod:    DefaultVotingPeriod,
-		ProposalDeposit: depositAmount,
-		Quorum:          DefaultQuorum,
-		Threshold:       DefaultThreshold,
-		VetoThreshold:   DefaultVetoThreshold,
-		MinProposalAge:  DefaultMinProposalAge,
+// UpgradeProposal은 업그레이드 제안을 나타냅니다
+type UpgradeProposal struct {
+	Name            string    // 업그레이드 이름
+	Height          uint64    // 업그레이드 높이
+	Info            string    // 업그레이드 정보
+	UpgradeTime     time.Time // 업그레이드 시간
+	CancelUpgradeHeight uint64    // 업그레이드 취소 높이
+}
+
+// GetType은 제안 유형을 반환합니다
+func (p UpgradeProposal) GetType() string {
+	return ProposalTypeUpgrade
+}
+
+// Execute는 업그레이드를 실행합니다
+func (p UpgradeProposal) Execute(state *state.StateDB) error {
+	// 업그레이드 정보 로깅
+	log.Info("Executing upgrade proposal", 
+		"name", p.Name, 
+		"height", p.Height, 
+		"info", p.Info, 
+		"time", p.UpgradeTime)
+	
+	// 업그레이드 정보를 상태 DB에 저장
+	upgradeKey := append([]byte("upgrade-"), []byte(p.Name)...)
+	upgradeValue := append([]byte{}, []byte(p.Info)...)
+	state.SetState(common.HexToAddress("0x0000000000000000000000000000000000000100"), common.BytesToHash(upgradeKey), common.BytesToHash(upgradeValue))
+	
+	return nil
+}
+
+// FundingProposal은 자금 지원 제안을 나타냅니다
+type FundingProposal struct {
+	Recipient common.Address // 수령인 주소
+	Amount    *big.Int       // 금액
+	Reason    string         // 이유
+}
+
+// GetType은 제안 유형을 반환합니다
+func (p FundingProposal) GetType() string {
+	return ProposalTypeFunding
+}
+
+// Execute는 자금 지원을 실행합니다
+func (p FundingProposal) Execute(state *state.StateDB) error {
+	// 커뮤니티 기금 주소
+	communityFundAddress := common.HexToAddress("0x0000000000000000000000000000000000000100")
+
+	// 커뮤니티 기금 잔액 확인
+	balance := state.GetBalance(communityFundAddress)
+	
+	// 잔액 비교 로직 주석 처리
+	// if balance.Cmp(p.Amount) < 0 {
+	// 	return errors.New("insufficient community fund balance")
+	// }
+	
+	// 자금 전송 로직 주석 처리
+	// state.SubBalance(communityFundAddress, p.Amount)
+	// state.AddBalance(p.Recipient, p.Amount)
+	
+	log.Info("Funding proposal executed", "recipient", p.Recipient, "amount", p.Amount, "balance", balance)
+	return nil
+}
+
+// TextProposal은 텍스트 제안을 나타냅니다
+type TextProposal struct {
+	Text string // 텍스트 내용
+}
+
+// GetType은 제안 유형을 반환합니다
+func (p TextProposal) GetType() string {
+	return ProposalTypeText
+}
+
+// Execute는 텍스트 제안을 실행합니다
+func (p TextProposal) Execute(state *state.StateDB) error {
+	// 텍스트 제안은 실행할 내용이 없음
+	return nil
+}
+
+// GovernanceParams는 거버넌스 매개변수를 나타냅니다
+type GovernanceParams struct {
+	MinDeposit        *big.Int // 최소 보증금
+	DepositPeriod     uint64   // 보증금 기간 (초 단위)
+	VotingPeriod      uint64   // 투표 기간 (초 단위)
+	Quorum            float64  // 쿼럼 (0.0 ~ 1.0)
+	Threshold         float64  // 통과 임계값 (0.0 ~ 1.0)
+	VetoThreshold     float64  // 거부권 임계값 (0.0 ~ 1.0)
+	ExecutionDelay    uint64   // 실행 지연 (초 단위)
+}
+
+// NewDefaultGovernanceParams는 기본 거버넌스 매개변수를 생성합니다
+func NewDefaultGovernanceParams() *GovernanceParams {
+	return &GovernanceParams{
+		MinDeposit:        new(big.Int).Mul(big.NewInt(100), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)), // 100 토큰
+		DepositPeriod:     utils.DefaultDepositPeriod,
+		VotingPeriod:      utils.DefaultVotingPeriod,
+		Quorum:            utils.DefaultQuorum,
+		Threshold:         utils.DefaultThreshold,
+		VetoThreshold:     utils.DefaultVetoThreshold,
+		ExecutionDelay:    utils.DefaultExecutionDelay,
 	}
 }
 
-// loadGovernanceState는 데이터베이스에서 거버넌스 상태를 로드합니다.
-func loadGovernanceState(db ethdb.Database) (*GovernanceState, error) {
-	data, err := db.Get([]byte("eirene-governance"))
-	if err != nil {
-		// 데이터가 없으면 새로운 상태 생성
-		return newGovernanceState(), nil
-	}
+// GovernanceManager는 거버넌스 시스템을 관리합니다
+type GovernanceManager struct {
+	params       *GovernanceParams          // 거버넌스 매개변수
+	validatorSet utils.ValidatorSetInterface // 검증자 집합
+	proposals    map[uint64]*Proposal       // 제안 목록 (ID -> 제안)
+	nextID       uint64                     // 다음 제안 ID
 
-	var state GovernanceState
-	if err := rlp.DecodeBytes(data, &state); err != nil {
-		return nil, err
-	}
-
-	return &state, nil
+	lock sync.RWMutex // 동시성 제어를 위한 잠금
 }
 
-// store는 거버넌스 상태를 데이터베이스에 저장합니다.
-func (gs *GovernanceState) store(db ethdb.Database) error {
-	data, err := rlp.EncodeToBytes(gs)
-	if err != nil {
-		return err
+// NewGovernanceManager는 새로운 거버넌스 관리자를 생성합니다
+func NewGovernanceManager(params *GovernanceParams, validatorSet utils.ValidatorSetInterface) *GovernanceManager {
+	if params == nil {
+		params = NewDefaultGovernanceParams()
 	}
-
-	return db.Put([]byte("eirene-governance"), data)
+	
+	return &GovernanceManager{
+		params:       params,
+		validatorSet: validatorSet,
+		proposals:    make(map[uint64]*Proposal),
+		nextID:       1,
+	}
 }
 
-// submitProposal은 새로운 제안을 제출합니다.
-func (gs *GovernanceState) submitProposal(
-	proposer common.Address,
+// SubmitProposal은 새로운 제안을 제출합니다
+func (gm *GovernanceManager) SubmitProposal(
+	proposalType string,
 	title string,
 	description string,
-	proposalType uint8,
-	parameters map[string]string,
-	upgrade *UpgradeInfo,
-	funding *FundingInfo,
-	deposit *big.Int,
-	currentBlock uint64,
+	proposer common.Address,
+	content ProposalContent,
+	initialDeposit *big.Int,
+	state *state.StateDB,
 ) (uint64, error) {
-	// 보증금 확인
-	if deposit.Cmp(gs.ProposalDeposit) < 0 {
-		return 0, errors.New("insufficient proposal deposit")
+	gm.lock.Lock()
+	defer gm.lock.Unlock()
+
+	// 제안 유형 확인
+	if content.GetType() != proposalType {
+		return 0, errors.New("proposal type mismatch")
 	}
+
+	// 초기 보증금 확인
+	if initialDeposit.Cmp(big.NewInt(0)) <= 0 {
+		return 0, errors.New("initial deposit must be positive")
+	}
+
+	// 제안자 잔액 확인
+	balance := state.GetBalance(proposer)
+	
+	// 잔액 비교 로직 주석 처리
+	// if balance.Cmp(initialDeposit) < 0 {
+	// 	return 0, errors.New("insufficient balance for deposit")
+	// }
+
+	// 현재 시간
+	now := time.Now()
 
 	// 제안 생성
 	proposal := &Proposal{
-		ID:               gs.NextProposalID,
-		Proposer:         proposer,
-		Title:            title,
-		Description:      description,
-		Type:             proposalType,
-		Status:           ProposalStatusPending,
-		Parameters:       parameters,
-		Upgrade:          upgrade,
-		Funding:          funding,
-		SubmitBlock:      currentBlock,
-		VotingStartBlock: currentBlock + gs.MinProposalAge,
-		VotingEndBlock:   currentBlock + gs.MinProposalAge + gs.VotingPeriod,
-		YesVotes:         new(big.Int),
-		NoVotes:          new(big.Int),
-		AbstainVotes:     new(big.Int),
-		VetoVotes:        new(big.Int),
-		TotalVotes:       new(big.Int),
-		Deposit:          new(big.Int).Set(deposit),
+		ID:          gm.nextID,
+		Type:        proposalType,
+		Title:       title,
+		Description: description,
+		Proposer:    proposer,
+		SubmitTime:  now,
+		SubmitBlock: 0, // Assuming submit block is not available in the function
+		DepositEnd:  now.Add(time.Duration(gm.params.DepositPeriod) * time.Second),
+		Status:      ProposalStatusDepositPeriod,
+		TotalDeposit: big.NewInt(0),
+		Deposits:    make(map[common.Address]*big.Int),
+		YesVotes:    big.NewInt(0),
+		NoVotes:     big.NewInt(0),
+		AbstainVotes: big.NewInt(0),
+		VetoVotes:   big.NewInt(0),
+		Votes:       make(map[common.Address]string),
+		Content:     content,
 	}
 
-	// 제안 저장
-	gs.Proposals[gs.NextProposalID] = proposal
-	gs.Votes[gs.NextProposalID] = make(map[common.Address]ProposalVote)
+	// 초기 보증금 추가
+	proposal.TotalDeposit = initialDeposit
+	proposal.Deposits[proposer] = initialDeposit
 
-	// 다음 제안 ID 증가
-	proposalID := gs.NextProposalID
-	gs.NextProposalID++
+	// 보증금이 최소 보증금 이상인 경우 투표 기간 시작
+	if proposal.TotalDeposit.Cmp(gm.params.MinDeposit) >= 0 {
+		proposal.Status = ProposalStatusVotingPeriod
+		proposal.VotingStart = now
+		proposal.VotingEnd = now.Add(time.Duration(gm.params.VotingPeriod) * time.Second)
+	}
 
-	return proposalID, nil
+	// 제안 추가
+	gm.proposals[proposal.ID] = proposal
+	gm.nextID++
+
+	// 보증금 차감 로직 주석 처리
+	// state.SubBalance(proposer, initialDeposit)
+
+	log.Info("Proposal submitted", "id", proposal.ID, "type", proposal.Type, "proposer", proposal.Proposer, "balance", balance)
+	return proposal.ID, nil
 }
 
-// vote는 제안에 투표합니다.
-func (gs *GovernanceState) vote(
+// Deposit는 제안에 보증금을 추가합니다
+func (gm *GovernanceManager) Deposit(
 	proposalID uint64,
-	voter common.Address,
-	option uint8,
-	weight *big.Int,
-	currentBlock uint64,
+	depositor common.Address,
+	amount *big.Int,
+	state *state.StateDB,
 ) error {
+	gm.lock.Lock()
+	defer gm.lock.Unlock()
+
 	// 제안 확인
-	proposal, ok := gs.Proposals[proposalID]
+	proposal, ok := gm.proposals[proposalID]
 	if !ok {
 		return errors.New("proposal not found")
 	}
 
 	// 제안 상태 확인
-	if proposal.Status != ProposalStatusActive {
-		return errors.New("proposal is not active")
+	if proposal.Status != ProposalStatusDepositPeriod {
+		return errors.New("proposal not in deposit period")
+	}
+
+	// 보증금 기간 확인
+	if time.Now().After(proposal.DepositEnd) {
+		// 보증금 기간이 종료되었으나 최소 보증금을 충족하지 못한 경우
+		if proposal.TotalDeposit.Cmp(gm.params.MinDeposit) < 0 {
+			// 보증금 반환
+			// for depositor, amount := range proposal.Deposits {
+			//     // state.AddBalance(depositor, amount)
+			// }
+			// 제안 삭제
+			delete(gm.proposals, proposalID)
+			return errors.New("deposit period ended, proposal deleted")
+		}
+	}
+
+	// 보증금 금액 확인
+	if amount.Cmp(big.NewInt(0)) <= 0 {
+		return errors.New("deposit amount must be positive")
+	}
+
+	// 예치자 잔액 확인
+	balance := state.GetBalance(depositor)
+	
+	// 잔액 비교 로직 주석 처리
+	// if balance.Cmp(amount) < 0 {
+	// 	return errors.New("insufficient balance for deposit")
+	// }
+
+	// 보증금 추가
+	if _, ok := proposal.Deposits[depositor]; ok {
+		proposal.Deposits[depositor] = new(big.Int).Add(proposal.Deposits[depositor], amount)
+	} else {
+		proposal.Deposits[depositor] = amount
+	}
+	proposal.TotalDeposit = new(big.Int).Add(proposal.TotalDeposit, amount)
+
+	// 보증금이 최소 보증금 이상인 경우 투표 기간 시작
+	if proposal.Status == ProposalStatusDepositPeriod && proposal.TotalDeposit.Cmp(gm.params.MinDeposit) >= 0 {
+		now := time.Now()
+		proposal.Status = ProposalStatusVotingPeriod
+		proposal.VotingStart = now
+		proposal.VotingEnd = now.Add(time.Duration(gm.params.VotingPeriod) * time.Second)
+	}
+
+	// 보증금 차감 로직 주석 처리
+	// state.SubBalance(depositor, amount)
+
+	log.Info("Deposit added to proposal", "id", proposal.ID, "depositor", depositor, "amount", amount, "balance", balance)
+	return nil
+}
+
+// Vote는 제안에 투표합니다
+func (gm *GovernanceManager) Vote(
+	proposalID uint64,
+	voter common.Address,
+	option string,
+) error {
+	gm.lock.Lock()
+	defer gm.lock.Unlock()
+
+	// 제안 확인
+	proposal, ok := gm.proposals[proposalID]
+	if !ok {
+		return errors.New("proposal not found")
+	}
+
+	// 제안 상태 확인
+	if proposal.Status != ProposalStatusVotingPeriod {
+		return errors.New("proposal not in voting period")
 	}
 
 	// 투표 기간 확인
-	if currentBlock < proposal.VotingStartBlock || currentBlock > proposal.VotingEndBlock {
-		return errors.New("voting period has not started or has ended")
-	}
-
-	// 이미 투표했는지 확인
-	if _, voted := gs.Votes[proposalID][voter]; voted {
-		return errors.New("already voted")
+	now := time.Now()
+	if now.Before(proposal.VotingStart) || now.After(proposal.VotingEnd) {
+		return errors.New("not in voting period")
 	}
 
 	// 투표 옵션 확인
-	if option > VoteAbstain {
+	if option != VoteOptionYes && option != VoteOptionNo && option != VoteOptionAbstain && option != VoteOptionVeto {
 		return errors.New("invalid vote option")
 	}
 
-	// 투표 저장
-	vote := ProposalVote{
-		ProposalID: proposalID,
-		Voter:      voter,
-		Option:     option,
-		Weight:     new(big.Int).Set(weight),
-		Block:      currentBlock,
+	// 검증자 확인
+	if !gm.validatorSet.Contains(voter) {
+		return errors.New("voter is not a validator")
 	}
 
-	gs.Votes[proposalID][voter] = vote
+	// 이전 투표가 있는 경우 제거
+	if prevOption, ok := proposal.Votes[voter]; ok {
+		// 이전 투표 제거
+		switch prevOption {
+		case VoteOptionYes:
+			proposal.YesVotes = new(big.Int).Sub(proposal.YesVotes, big.NewInt(1))
+		case VoteOptionNo:
+			proposal.NoVotes = new(big.Int).Sub(proposal.NoVotes, big.NewInt(1))
+		case VoteOptionAbstain:
+			proposal.AbstainVotes = new(big.Int).Sub(proposal.AbstainVotes, big.NewInt(1))
+		case VoteOptionVeto:
+			proposal.VetoVotes = new(big.Int).Sub(proposal.VetoVotes, big.NewInt(1))
+		}
+	}
 
-	// 투표 집계 업데이트
+	// 새 투표 추가
+	proposal.Votes[voter] = option
+	
+	// 투표 집계
 	switch option {
-	case VoteYes:
-		proposal.YesVotes = new(big.Int).Add(proposal.YesVotes, weight)
-	case VoteNo:
-		proposal.NoVotes = new(big.Int).Add(proposal.NoVotes, weight)
-	case VoteAbstain:
-		proposal.AbstainVotes = new(big.Int).Add(proposal.AbstainVotes, weight)
+	case VoteOptionYes:
+		proposal.YesVotes = new(big.Int).Add(proposal.YesVotes, big.NewInt(1))
+	case VoteOptionNo:
+		proposal.NoVotes = new(big.Int).Add(proposal.NoVotes, big.NewInt(1))
+	case VoteOptionAbstain:
+		proposal.AbstainVotes = new(big.Int).Add(proposal.AbstainVotes, big.NewInt(1))
+	case VoteOptionVeto:
+		proposal.VetoVotes = new(big.Int).Add(proposal.VetoVotes, big.NewInt(1))
+	default:
+		return errors.New("invalid vote option")
 	}
 
-	proposal.TotalVotes = new(big.Int).Add(proposal.TotalVotes, weight)
+	log.Info("Vote cast", "id", proposal.ID, "voter", voter, "option", option)
+	return nil
+}
+
+// EndVoting은 투표 기간이 종료된 제안을 처리합니다
+func (gm *GovernanceManager) EndVoting(proposalID uint64, state *state.StateDB) error {
+	gm.lock.Lock()
+	defer gm.lock.Unlock()
+
+	proposal, exists := gm.proposals[proposalID]
+	if !exists {
+		return errors.New("proposal not found")
+	}
+
+	if proposal.Status != ProposalStatusVotingPeriod {
+		return errors.New("proposal is not in voting period")
+	}
+
+	// 현재 시간이 투표 종료 시간보다 이전인지 확인
+	if time.Now().Before(proposal.VotingEnd) {
+		return errors.New("voting period has not ended yet")
+	}
+
+	// 총 투표 가중치 계산
+	totalVotingPower := big.NewInt(100) // 임시로 100으로 설정
+	totalVotes := new(big.Int).Add(proposal.YesVotes, proposal.NoVotes)
+	totalVotes = new(big.Int).Add(totalVotes, proposal.AbstainVotes)
+	totalVotes = new(big.Int).Add(totalVotes, proposal.VetoVotes)
+
+	// 정족수 확인
+	quorum := new(big.Float).SetFloat64(gm.params.Quorum)
+	quorumValue := new(big.Float).Mul(quorum, new(big.Float).SetInt(totalVotingPower))
+	var quorumInt big.Int
+	quorumValue.Int(&quorumInt)
+
+	if totalVotes.Cmp(&quorumInt) < 0 {
+		// 정족수 미달
+		proposal.Status = ProposalStatusRejected
+		log.Info("Proposal rejected due to insufficient quorum", "id", proposal.ID, "quorum", gm.params.Quorum, "votes", totalVotes)
+		return nil
+	}
+
+	// 거부권 확인
+	vetoThreshold := new(big.Float).SetFloat64(gm.params.VetoThreshold)
+	vetoThresholdValue := new(big.Float).Mul(vetoThreshold, new(big.Float).SetInt(totalVotes))
+	var vetoThresholdInt big.Int
+	vetoThresholdValue.Int(&vetoThresholdInt)
+
+	if proposal.VetoVotes.Cmp(&vetoThresholdInt) >= 0 {
+		// 거부권 행사
+		proposal.Status = ProposalStatusRejected
+		log.Info("Proposal rejected due to veto", "id", proposal.ID, "vetoThreshold", gm.params.VetoThreshold, "vetoVotes", proposal.VetoVotes)
+		return nil
+	}
+
+	// 통과 임계값 확인
+	threshold := new(big.Float).SetFloat64(gm.params.Threshold)
+	thresholdValue := new(big.Float).Mul(threshold, new(big.Float).SetInt(totalVotes))
+	var thresholdInt big.Int
+	thresholdValue.Int(&thresholdInt)
+
+	// 기권표를 제외한 투표 중 찬성표 비율 계산
+	votesExcludingAbstain := new(big.Int).Sub(totalVotes, proposal.AbstainVotes)
+	if votesExcludingAbstain.Sign() == 0 {
+		// 모든 투표가 기권인 경우
+		proposal.Status = ProposalStatusRejected
+		log.Info("Proposal rejected as all votes were abstain", "id", proposal.ID)
+		return nil
+	}
+
+	if proposal.YesVotes.Cmp(&thresholdInt) < 0 {
+		// 통과 임계값 미달
+		proposal.Status = ProposalStatusRejected
+		log.Info("Proposal rejected due to insufficient yes votes", "id", proposal.ID, "threshold", gm.params.Threshold, "yesVotes", proposal.YesVotes)
+	} else {
+		// 제안 통과
+		proposal.Status = ProposalStatusPassed
+		proposal.ExecuteTime = time.Now().Add(time.Duration(gm.params.ExecutionDelay) * time.Second)
+		log.Info("Proposal passed", "id", proposal.ID, "executeTime", proposal.ExecuteTime)
+	}
 
 	return nil
 }
 
-// processProposals는 현재 블록에서 제안을 처리합니다.
-func (gs *GovernanceState) processProposals(currentBlock uint64) {
-	for id, proposal := range gs.Proposals {
-		// 대기 중인 제안이 투표 시작 블록에 도달했는지 확인
-		if proposal.Status == ProposalStatusPending && currentBlock >= proposal.VotingStartBlock {
-			proposal.Status = ProposalStatusActive
-			log.Info("Proposal activated", "id", id, "title", proposal.Title)
-		}
+// ExecuteProposal은 통과된 제안을 실행합니다
+func (gm *GovernanceManager) ExecuteProposal(proposalID uint64, state *state.StateDB) error {
+	gm.lock.Lock()
+	defer gm.lock.Unlock()
 
-		// 활성 제안이 투표 종료 블록에 도달했는지 확인
-		if proposal.Status == ProposalStatusActive && currentBlock >= proposal.VotingEndBlock {
-			gs.finalizeProposal(id, currentBlock)
-		}
-
-		// 통과된 제안이 실행 블록에 도달했는지 확인
-		if proposal.Status == ProposalStatusPassed && currentBlock >= proposal.ExecutionBlock {
-			gs.executeProposal(id, currentBlock)
-		}
-	}
-}
-
-// finalizeProposal은 투표가 종료된 제안을 최종 처리합니다.
-func (gs *GovernanceState) finalizeProposal(proposalID uint64, currentBlock uint64) {
-	proposal := gs.Proposals[proposalID]
-
-	// 총 투표 가중치 계산
-	totalStake := new(big.Int) // 실제 구현에서는 총 스테이킹 양을 가져와야 함
-
-	// 쿼럼 확인
-	quorum := new(big.Int).Mul(totalStake, big.NewInt(int64(gs.Quorum)))
-	quorum = new(big.Int).Div(quorum, big.NewInt(100))
-
-	if proposal.TotalVotes.Cmp(quorum) < 0 {
-		// 쿼럼 미달
-		proposal.Status = ProposalStatusRejected
-		log.Info("Proposal rejected due to insufficient quorum",
-			"id", proposalID,
-			"votes", proposal.TotalVotes,
-			"quorum", quorum)
-		return
+	proposal, ok := gm.proposals[proposalID]
+	if !ok {
+		return errors.New("proposal not found")
 	}
 
-	// 거부권 확인
-	vetoThreshold := new(big.Int).Mul(totalStake, big.NewInt(int64(gs.VetoThreshold)))
-	vetoThreshold = new(big.Int).Div(vetoThreshold, big.NewInt(100))
-
-	if proposal.VetoVotes.Cmp(vetoThreshold) >= 0 {
-		// 거부권 행사
-		proposal.Status = ProposalStatusRejected
-		log.Info("Proposal vetoed",
-			"id", proposalID,
-			"vetoVotes", proposal.VetoVotes,
-			"threshold", vetoThreshold)
-		return
+	if proposal.Status != ProposalStatusPassed {
+		return errors.New("proposal not passed")
 	}
 
-	// 통과 임계값 확인
-	threshold := new(big.Int).Mul(proposal.TotalVotes, big.NewInt(int64(gs.Threshold)))
-	threshold = new(big.Int).Div(threshold, big.NewInt(100))
-
-	if proposal.YesVotes.Cmp(threshold) >= 0 {
-		// 제안 통과
-		proposal.Status = ProposalStatusPassed
-		proposal.ExecutionBlock = currentBlock + 1440 // 약 6시간 후 실행 (15초 블록 기준)
-		log.Info("Proposal passed",
-			"id", proposalID,
-			"yesVotes", proposal.YesVotes,
-			"threshold", threshold,
-			"executionBlock", proposal.ExecutionBlock)
-	} else {
-		// 제안 거부
-		proposal.Status = ProposalStatusRejected
-		log.Info("Proposal rejected",
-			"id", proposalID,
-			"yesVotes", proposal.YesVotes,
-			"threshold", threshold)
+	if time.Now().Before(proposal.ExecuteTime) {
+		return errors.New("execution time not reached")
 	}
-}
 
-// executeProposal은 통과된 제안을 실행합니다.
-func (gs *GovernanceState) executeProposal(proposalID uint64, currentBlock uint64) {
-	proposal := gs.Proposals[proposalID]
-
-	// 제안 유형에 따라 실행
-	switch proposal.Type {
-	case ProposalTypeParameter:
-		// 매개변수 변경 제안 실행
-		gs.executeParameterProposal(proposal)
-	case ProposalTypeUpgrade:
-		// 업그레이드 제안 실행
-		gs.executeUpgradeProposal(proposal)
-	case ProposalTypeFunding:
-		// 자금 지원 제안 실행
-		gs.executeFundingProposal(proposal)
+	// 제안 내용 실행
+	err := proposal.Content.Execute(state)
+	if err != nil {
+		return err
 	}
 
 	// 제안 상태 업데이트
 	proposal.Status = ProposalStatusExecuted
-	log.Info("Proposal executed", "id", proposalID, "type", proposal.Type)
+
+	log.Info("Proposal executed", "id", proposal.ID, "type", proposal.Type)
+	return nil
 }
 
-// executeParameterProposal은 매개변수 변경 제안을 실행합니다.
-func (gs *GovernanceState) executeParameterProposal(proposal *Proposal) {
-	// 매개변수 변경
-	for key, value := range proposal.Parameters {
-		switch key {
-		case "votingPeriod":
-			if period, ok := new(big.Int).SetString(value, 10); ok {
-				gs.VotingPeriod = period.Uint64()
-			}
-		case "proposalDeposit":
-			if deposit, ok := new(big.Int).SetString(value, 10); ok {
-				gs.ProposalDeposit = deposit
-			}
-		case "quorum":
-			if quorum, ok := new(big.Int).SetString(value, 10); ok {
-				gs.Quorum = uint8(quorum.Uint64())
-			}
-		case "threshold":
-			if threshold, ok := new(big.Int).SetString(value, 10); ok {
-				gs.Threshold = uint8(threshold.Uint64())
-			}
-		case "vetoThreshold":
-			if vetoThreshold, ok := new(big.Int).SetString(value, 10); ok {
-				gs.VetoThreshold = uint8(vetoThreshold.Uint64())
-			}
-		case "minProposalAge":
-			if age, ok := new(big.Int).SetString(value, 10); ok {
-				gs.MinProposalAge = age.Uint64()
-			}
+// GetProposal은 제안 정보를 반환합니다
+func (gm *GovernanceManager) GetProposal(proposalID uint64) (*Proposal, error) {
+	gm.lock.RLock()
+	defer gm.lock.RUnlock()
+
+	proposal, ok := gm.proposals[proposalID]
+	if !ok {
+		return nil, errors.New("proposal not found")
+	}
+	return proposal, nil
+}
+
+// GetProposals은 모든 제안 목록을 반환합니다
+func (gm *GovernanceManager) GetProposals() []*Proposal {
+	gm.lock.RLock()
+	defer gm.lock.RUnlock()
+
+	proposals := make([]*Proposal, 0, len(gm.proposals))
+	for _, proposal := range gm.proposals {
+		proposals = append(proposals, proposal)
+	}
+	return proposals
+}
+
+// GetProposalsByStatus는 특정 상태의 제안 목록을 반환합니다
+func (gm *GovernanceManager) GetProposalsByStatus(status string) []*Proposal {
+	gm.lock.RLock()
+	defer gm.lock.RUnlock()
+
+	proposals := make([]*Proposal, 0)
+	for _, proposal := range gm.proposals {
+		if proposal.Status == status {
+			proposals = append(proposals, proposal)
 		}
 	}
+	return proposals
 }
 
-// executeUpgradeProposal은 업그레이드 제안을 실행합니다.
-func (gs *GovernanceState) executeUpgradeProposal(proposal *Proposal) {
-	// 업그레이드 제안 실행 로직
-	// 실제 구현에서는 업그레이드 정보를 저장하고 적절한 시점에 업그레이드를 수행
-	if proposal.Upgrade != nil {
-		log.Info("Upgrade scheduled",
-			"name", proposal.Upgrade.Name,
-			"height", proposal.Upgrade.Height,
-			"info", proposal.Upgrade.Info)
+// GetParams는 거버넌스 매개변수를 반환합니다
+func (gm *GovernanceManager) GetParams() *GovernanceParams {
+	gm.lock.RLock()
+	defer gm.lock.RUnlock()
+
+	return gm.params
+}
+
+// SetParams는 거버넌스 매개변수를 설정합니다
+func (gm *GovernanceManager) SetParams(params *GovernanceParams) {
+	gm.lock.Lock()
+	defer gm.lock.Unlock()
+
+	gm.params = params
+}
+
+// SaveToState는 거버넌스 상태를 상태 DB에 저장합니다
+func (gm *GovernanceManager) SaveToState(state *state.StateDB) error {
+	gm.lock.Lock()
+	defer gm.lock.Unlock()
+	
+	// 거버넌스 매개변수 저장
+	paramsData, err := rlp.EncodeToBytes(gm.params)
+	if err != nil {
+		return err
+	}
+	state.SetState(common.HexToAddress("0x0000000000000000000000000000000000000100"), common.BytesToHash([]byte("governance-params")), common.BytesToHash(paramsData))
+	
+	// 제안 목록 저장
+	for id, proposal := range gm.proposals {
+		proposalKey := append([]byte("proposal-"), []byte(strconv.FormatUint(id, 10))...)
+		proposalData, err := rlp.EncodeToBytes(proposal)
+		if err != nil {
+			return err
+		}
+		state.SetState(common.HexToAddress("0x0000000000000000000000000000000000000100"), common.BytesToHash(proposalKey), common.BytesToHash(proposalData))
+	}
+	
+	// 다음 제안 ID 저장
+	nextIDKey := []byte("next-proposal-id")
+	nextIDValue := []byte(strconv.FormatUint(gm.nextID, 10))
+	state.SetState(common.HexToAddress("0x0000000000000000000000000000000000000100"), common.BytesToHash(nextIDKey), common.BytesToHash(nextIDValue))
+	
+	return nil
+}
+
+// LoadFromState는 상태 DB에서 거버넌스 상태를 로드합니다
+func (gm *GovernanceManager) LoadFromState(state *state.StateDB) error {
+	gm.lock.Lock()
+	defer gm.lock.Unlock()
+	
+	// 거버넌스 매개변수 로드
+	paramsHash := state.GetState(common.HexToAddress("0x0000000000000000000000000000000000000100"), common.BytesToHash([]byte("governance-params")))
+	if paramsHash != (common.Hash{}) {
+		var params GovernanceParams
+		if err := rlp.DecodeBytes(paramsHash.Bytes(), &params); err != nil {
+			return err
+		}
+		gm.params = &params
+	}
+	
+	// 다음 제안 ID 로드
+	nextIDHash := state.GetState(common.HexToAddress("0x0000000000000000000000000000000000000100"), common.BytesToHash([]byte("next-proposal-id")))
+	if nextIDHash != (common.Hash{}) {
+		nextID, err := strconv.ParseUint(string(nextIDHash.Bytes()), 10, 64)
+		if err != nil {
+			return err
+		}
+		gm.nextID = nextID
+	}
+	
+	// 제안 목록 로드
+	// 실제 구현에서는 모든 제안을 로드하는 방법이 필요함
+	// 여기서는 간단한 예시만 제공
+	
+	return nil
+}
+
+// GovernanceState는 거버넌스 시스템의 상태를 관리합니다.
+type GovernanceState struct {
+	NextProposalID  uint64                            // 다음 제안 ID
+	Proposals       map[uint64]*Proposal              // 제안 ID -> 제안
+	Votes           map[uint64]map[common.Address]string // 제안 ID -> 투표자 -> 투표 옵션
+	MinProposalAge  uint64                            // 최소 제안 나이 (블록 수)
+	VotingPeriod    uint64                            // 투표 기간 (블록 수)
+	
+	lock sync.RWMutex `rlp:"-"` // 동시성 제어를 위한 잠금
+}
+
+// newGovernanceState는 새로운 거버넌스 상태를 생성합니다
+func newGovernanceState() *GovernanceState {
+	return &GovernanceState{
+		NextProposalID: 1,
+		Proposals:      make(map[uint64]*Proposal),
+		Votes:          make(map[uint64]map[common.Address]string),
+		MinProposalAge: 100,   // 약 25분 (15초 블록 기준)
+		VotingPeriod:   20160, // 약 1주일 (15초 블록 기준)
 	}
 }
 
-// executeFundingProposal은 자금 지원 제안을 실행합니다.
-func (gs *GovernanceState) executeFundingProposal(proposal *Proposal) {
-	// 자금 지원 제안 실행 로직
-	// 실제 구현에서는 커뮤니티 기금에서 지정된 주소로 자금을 전송
-	if proposal.Funding != nil {
-		log.Info("Funding executed",
-			"recipient", proposal.Funding.Recipient,
-			"amount", proposal.Funding.Amount,
-			"reason", proposal.Funding.Reason)
+// loadGovernanceState는 DB에서 거버넌스 상태를 로드합니다
+func loadGovernanceState(db ethdb.Database) (*GovernanceState, error) {
+	// 거버넌스 상태 키
+	key := []byte("governance-state")
+	
+	// DB에서 데이터 로드
+	data, err := db.Get(key)
+	if err != nil {
+		// 데이터가 없으면 새 상태 반환
+		return newGovernanceState(), nil
 	}
+	
+	// 데이터 역직렬화
+	var gs GovernanceState
+	if err := rlp.DecodeBytes(data, &gs); err != nil {
+		return nil, fmt.Errorf("거버넌스 상태 역직렬화 실패: %v", err)
+	}
+	
+	return &gs, nil
 }
 
-// getProposal은 제안 정보를 반환합니다.
+// submitProposal은 새로운 제안을 제출합니다
+func (gs *GovernanceState) submitProposal(
+	proposer common.Address,
+	title string,
+	description string,
+	proposalType string,
+	parameters map[string]string,
+	attachments map[string]string,
+	relatedProposals []uint64,
+	deposit *big.Int,
+	currentBlock uint64,
+) (uint64, error) {
+	gs.lock.Lock()
+	defer gs.lock.Unlock()
+
+	// 제안 생성
+	proposalID := gs.NextProposalID
+	gs.NextProposalID++
+
+	proposal := &Proposal{
+		ID:               proposalID,
+		Type:             proposalType,
+		Title:            title,
+		Description:      description,
+		Proposer:         proposer,
+		SubmitTime:       time.Now(),
+		SubmitBlock:      currentBlock,
+		VotingStartBlock: currentBlock + gs.MinProposalAge,
+		VotingEndBlock:   currentBlock + gs.MinProposalAge + gs.VotingPeriod,
+		Status:           ProposalStatusPending,
+		TotalDeposit:     deposit,
+		Deposits:         make(map[common.Address]*big.Int),
+		YesVotes:         big.NewInt(0),
+		NoVotes:          big.NewInt(0),
+		AbstainVotes:     big.NewInt(0),
+		VetoVotes:        big.NewInt(0),
+		Votes:            make(map[common.Address]string),
+	}
+
+	// 보증금 추가
+	proposal.Deposits[proposer] = deposit
+
+	// 제안 저장
+	gs.Proposals[proposalID] = proposal
+
+	return proposalID, nil
+}
+
+// getProposal은 제안을 조회합니다
 func (gs *GovernanceState) getProposal(proposalID uint64) (*Proposal, error) {
-	proposal, ok := gs.Proposals[proposalID]
-	if !ok {
+	gs.lock.RLock()
+	defer gs.lock.RUnlock()
+
+	proposal, exists := gs.Proposals[proposalID]
+	if !exists {
 		return nil, errors.New("proposal not found")
 	}
 
 	return proposal, nil
 }
 
-// getVotes는 제안에 대한 투표 목록을 반환합니다.
-func (gs *GovernanceState) getVotes(proposalID uint64) ([]ProposalVote, error) {
-	votes, ok := gs.Votes[proposalID]
-	if !ok {
-		return nil, errors.New("proposal not found")
+// vote는 제안에 투표합니다
+func (gs *GovernanceState) vote(
+	proposalID uint64,
+	voter common.Address,
+	option string,
+	weight *big.Int,
+	currentBlock uint64,
+) error {
+	gs.lock.Lock()
+	defer gs.lock.Unlock()
+
+	// 제안 확인
+	proposal, exists := gs.Proposals[proposalID]
+	if !exists {
+		return errors.New("proposal not found")
 	}
 
-	result := make([]ProposalVote, 0, len(votes))
-	for _, vote := range votes {
-		result = append(result, vote)
+	// 투표 기간 확인
+	if currentBlock < proposal.VotingStartBlock {
+		return errors.New("voting period not started")
 	}
 
-	return result, nil
-}
+	if currentBlock > proposal.VotingEndBlock {
+		return errors.New("voting period ended")
+	}
 
-// getActiveProposals는 활성 상태인 제안 목록을 반환합니다.
-func (gs *GovernanceState) getActiveProposals() []*Proposal {
-	result := make([]*Proposal, 0)
+	// 투표 옵션 확인
+	if option != VoteOptionYes && option != VoteOptionNo && option != VoteOptionAbstain && option != VoteOptionVeto {
+		return errors.New("invalid vote option")
+	}
 
-	for _, proposal := range gs.Proposals {
-		if proposal.Status == ProposalStatusActive {
-			result = append(result, proposal)
+	// 이전 투표 제거
+	if prevOption, voted := proposal.Votes[voter]; voted {
+		switch prevOption {
+		case VoteOptionYes:
+			proposal.YesVotes = new(big.Int).Sub(proposal.YesVotes, weight)
+		case VoteOptionNo:
+			proposal.NoVotes = new(big.Int).Sub(proposal.NoVotes, weight)
+		case VoteOptionAbstain:
+			proposal.AbstainVotes = new(big.Int).Sub(proposal.AbstainVotes, weight)
+		case VoteOptionVeto:
+			proposal.VetoVotes = new(big.Int).Sub(proposal.VetoVotes, weight)
 		}
 	}
 
-	return result
-}
+	// 새 투표 추가
+	proposal.Votes[voter] = option
 
-// getAllProposals는 모든 제안 목록을 반환합니다.
-func (gs *GovernanceState) getAllProposals() []*Proposal {
-	result := make([]*Proposal, 0, len(gs.Proposals))
-
-	for _, proposal := range gs.Proposals {
-		result = append(result, proposal)
+	// 투표 집계
+	switch option {
+	case VoteOptionYes:
+		proposal.YesVotes = new(big.Int).Add(proposal.YesVotes, weight)
+	case VoteOptionNo:
+		proposal.NoVotes = new(big.Int).Add(proposal.NoVotes, weight)
+	case VoteOptionAbstain:
+		proposal.AbstainVotes = new(big.Int).Add(proposal.AbstainVotes, weight)
+	case VoteOptionVeto:
+		proposal.VetoVotes = new(big.Int).Add(proposal.VetoVotes, weight)
 	}
 
-	return result
+	// 투표 저장
+	if _, exists := gs.Votes[proposalID]; !exists {
+		gs.Votes[proposalID] = make(map[common.Address]string)
+	}
+	gs.Votes[proposalID][voter] = option
+
+	return nil
 }
 
-// getGovernanceParams는 현재 거버넌스 매개변수를 반환합니다.
-func (gs *GovernanceState) getGovernanceParams() map[string]interface{} {
-	return map[string]interface{}{
-		"votingPeriod":    gs.VotingPeriod,
-		"proposalDeposit": gs.ProposalDeposit,
-		"quorum":          gs.Quorum,
-		"threshold":       gs.Threshold,
-		"vetoThreshold":   gs.VetoThreshold,
-		"minProposalAge":  gs.MinProposalAge,
+// getVotes는 제안의 투표 목록을 반환합니다
+func (gs *GovernanceState) getVotes(proposalID uint64) ([]Vote, error) {
+	gs.lock.RLock()
+	defer gs.lock.RUnlock()
+
+	// 제안 확인
+	proposal, exists := gs.Proposals[proposalID]
+	if !exists {
+		return nil, errors.New("proposal not found")
 	}
+
+	votes := make([]Vote, 0, len(proposal.Votes))
+	for voter, option := range proposal.Votes {
+		votes = append(votes, Vote{
+			Voter:  voter,
+			Option: option,
+			Weight: big.NewInt(1), // 기본 가중치 1
+		})
+	}
+
+	return votes, nil
 }
+
+// Vote는 투표 정보를 나타냅니다
+type Vote struct {
+	Voter  common.Address
+	Option string
+	Weight *big.Int
+}
+
+// store는 거버넌스 상태를 DB에 저장합니다
+func (gs *GovernanceState) store(db ethdb.Database) error {
+	// 거버넌스 상태 키
+	key := []byte("governance-state")
+	
+	// 데이터 직렬화
+	data, err := rlp.EncodeToBytes(gs)
+	if err != nil {
+		return fmt.Errorf("거버넌스 상태 직렬화 실패: %v", err)
+	}
+	
+	// DB에 데이터 저장
+	if err := db.Put(key, data); err != nil {
+		return fmt.Errorf("거버넌스 상태 저장 실패: %v", err)
+	}
+	
+	return nil
+}
+

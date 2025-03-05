@@ -84,7 +84,7 @@ func TestCreateClient(t *testing.T) {
 		t.Errorf("클라이언트 유형이 일치하지 않음: %s != %s", client.Type, clientType)
 	}
 
-	if client.State != IBCClientStateActive {
+	if client.State != ClientStateActive {
 		t.Errorf("클라이언트 상태가 활성 상태가 아님: %d", client.State)
 	}
 
@@ -189,7 +189,7 @@ func TestCreateConnection(t *testing.T) {
 		t.Errorf("연결 상대방 연결 ID가 일치하지 않음: %s != %s", connection.CounterpartyConnectionID, counterpartyConnectionID)
 	}
 
-	if connection.State != IBCChannelStateInit {
+	if connection.State != ConnectionStateInit {
 		t.Errorf("연결 상태가 초기화 상태가 아님: %d", connection.State)
 	}
 
@@ -262,7 +262,7 @@ func TestOpenConnection(t *testing.T) {
 	// 열린 연결 확인
 	connection := ibcState.Connections[testConnectionID]
 
-	if connection.State != IBCChannelStateOpen {
+	if connection.State != ConnectionStateOpen {
 		t.Errorf("연결 상태가 열림 상태가 아님: %d", connection.State)
 	}
 
@@ -353,7 +353,7 @@ func TestCreateChannel(t *testing.T) {
 		t.Errorf("채널 상대방 채널 ID가 일치하지 않음: %s != %s", channel.CounterpartyChannelID, counterpartyChannelID)
 	}
 
-	if channel.State != IBCChannelStateInit {
+	if channel.State != ChannelStateInit {
 		t.Errorf("채널 상태가 초기화 상태가 아님: %d", channel.State)
 	}
 
@@ -537,7 +537,7 @@ func TestIBCEngine(t *testing.T) {
 	clientID := "07-tendermint-0"
 	consensusState := []byte("consensus state")
 	trustingPeriod := uint64(100000)
-	_, err := ibcState.createClient(clientID, "07-tendermint", consensusState, trustingPeriod)
+	_, err := ibcState.createClient(clientID, "tendermint", consensusState, trustingPeriod)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -617,5 +617,330 @@ func TestIBCEngine(t *testing.T) {
 	}
 	if len(loadedState.Packets) != 1 {
 		t.Errorf("Expected 1 packet, got %d", len(loadedState.Packets))
+	}
+}
+
+// TestCreateDuplicateClient는 중복 클라이언트 생성을 테스트합니다.
+func TestCreateDuplicateClient(t *testing.T) {
+	// 새로운 IBC 상태 생성
+	ibcState := newIBCState()
+
+	// 클라이언트 생성
+	clientType := "tendermint"
+	consensusState := []byte("test consensus state")
+	trustingPeriod := uint64(100000)
+
+	// 첫 번째 클라이언트 생성
+	_, err := ibcState.createClient(testClientID, clientType, consensusState, trustingPeriod)
+	if err != nil {
+		t.Fatalf("첫 번째 클라이언트 생성 실패: %v", err)
+	}
+
+	// 동일한 ID로 두 번째 클라이언트 생성 시도
+	_, err = ibcState.createClient(testClientID, clientType, consensusState, trustingPeriod)
+	
+	// 오류가 발생해야 함
+	if err == nil {
+		t.Error("중복 클라이언트 생성이 성공함")
+	}
+}
+
+// TestUpdateNonExistentClient는 존재하지 않는 클라이언트 업데이트를 테스트합니다.
+func TestUpdateNonExistentClient(t *testing.T) {
+	// 새로운 IBC 상태 생성
+	ibcState := newIBCState()
+
+	// 존재하지 않는 클라이언트 ID
+	nonExistentClientID := "07-tendermint-999"
+	
+	// 존재하지 않는 클라이언트 업데이트 시도
+	height := uint64(100)
+	consensusState := []byte("updated consensus state")
+	err := ibcState.updateClient(nonExistentClientID, height, consensusState)
+	
+	// 오류가 발생해야 함
+	if err == nil {
+		t.Error("존재하지 않는 클라이언트 업데이트가 성공함")
+	}
+}
+
+// TestCreateConnectionWithNonExistentClient는 존재하지 않는 클라이언트로 연결 생성을 테스트합니다.
+func TestCreateConnectionWithNonExistentClient(t *testing.T) {
+	// 새로운 IBC 상태 생성
+	ibcState := newIBCState()
+
+	// 존재하지 않는 클라이언트 ID
+	nonExistentClientID := "07-tendermint-999"
+	
+	// 존재하지 않는 클라이언트로 연결 생성 시도
+	connectionID := "connection-0"
+	counterpartyClientID := "07-tendermint-1"
+	counterpartyConnectionID := "connection-1"
+	version := "1.0"
+	
+	_, err := ibcState.createConnection(connectionID, nonExistentClientID, counterpartyClientID, counterpartyConnectionID, version)
+	
+	// 오류가 발생해야 함
+	if err == nil {
+		t.Error("존재하지 않는 클라이언트로 연결 생성이 성공함")
+	}
+}
+
+// TestCreateDuplicateConnection는 중복 연결 생성을 테스트합니다.
+func TestCreateDuplicateConnection(t *testing.T) {
+	// 새로운 IBC 상태 생성
+	ibcState := newIBCState()
+
+	// 클라이언트 생성
+	clientType := "tendermint"
+	consensusState := []byte("test consensus state")
+	trustingPeriod := uint64(100000)
+	
+	_, err := ibcState.createClient(testClientID, clientType, consensusState, trustingPeriod)
+	if err != nil {
+		t.Fatalf("클라이언트 생성 실패: %v", err)
+	}
+
+	// 연결 생성
+	connectionID := "connection-0"
+	counterpartyClientID := "07-tendermint-1"
+	counterpartyConnectionID := "connection-1"
+	version := "1.0"
+	
+	_, err = ibcState.createConnection(connectionID, testClientID, counterpartyClientID, counterpartyConnectionID, version)
+	if err != nil {
+		t.Fatalf("첫 번째 연결 생성 실패: %v", err)
+	}
+
+	// 동일한 ID로 두 번째 연결 생성 시도
+	_, err = ibcState.createConnection(connectionID, testClientID, counterpartyClientID, counterpartyConnectionID, version)
+	
+	// 오류가 발생해야 함
+	if err == nil {
+		t.Error("중복 연결 생성이 성공함")
+	}
+}
+
+// TestOpenNonExistentConnection는 존재하지 않는 연결 열기를 테스트합니다.
+func TestOpenNonExistentConnection(t *testing.T) {
+	// 새로운 IBC 상태 생성
+	ibcState := newIBCState()
+
+	// 존재하지 않는 연결 ID
+	nonExistentConnectionID := "connection-999"
+	
+	// 존재하지 않는 연결 열기 시도
+	err := ibcState.openConnection(nonExistentConnectionID)
+	
+	// 오류가 발생해야 함
+	if err == nil {
+		t.Error("존재하지 않는 연결 열기가 성공함")
+	}
+}
+
+// TestCreateChannelWithNonExistentConnection는 존재하지 않는 연결로 채널 생성을 테스트합니다.
+func TestCreateChannelWithNonExistentConnection(t *testing.T) {
+	// 새로운 IBC 상태 생성
+	ibcState := newIBCState()
+
+	// 존재하지 않는 연결 ID
+	nonExistentConnectionID := "connection-999"
+	
+	// 존재하지 않는 연결로 채널 생성 시도
+	portID := "transfer"
+	channelID := "channel-0"
+	counterpartyPortID := "transfer"
+	counterpartyChannelID := "channel-1"
+	version := "ics20-1"
+	
+	_, err := ibcState.createChannel(portID, channelID, nonExistentConnectionID, counterpartyPortID, counterpartyChannelID, version)
+	
+	// 오류가 발생해야 함
+	if err == nil {
+		t.Error("존재하지 않는 연결로 채널 생성이 성공함")
+	}
+}
+
+// TestCreateDuplicateChannel는 중복 채널 생성을 테스트합니다.
+func TestCreateDuplicateChannel(t *testing.T) {
+	// 새로운 IBC 상태 생성
+	ibcState := newIBCState()
+
+	// 클라이언트 생성
+	clientType := "tendermint"
+	consensusState := []byte("test consensus state")
+	trustingPeriod := uint64(100000)
+	
+	_, err := ibcState.createClient(testClientID, clientType, consensusState, trustingPeriod)
+	if err != nil {
+		t.Fatalf("클라이언트 생성 실패: %v", err)
+	}
+
+	// 연결 생성
+	connectionID := "connection-0"
+	counterpartyClientID := "07-tendermint-1"
+	counterpartyConnectionID := "connection-1"
+	connVersion := "1.0"
+	
+	_, err = ibcState.createConnection(connectionID, testClientID, counterpartyClientID, counterpartyConnectionID, connVersion)
+	if err != nil {
+		t.Fatalf("연결 생성 실패: %v", err)
+	}
+
+	// 연결 열기
+	err = ibcState.openConnection(connectionID)
+	if err != nil {
+		t.Fatalf("연결 열기 실패: %v", err)
+	}
+
+	// 채널 생성
+	portID := "transfer"
+	channelID := "channel-0"
+	counterpartyPortID := "transfer"
+	counterpartyChannelID := "channel-1"
+	channelVersion := "ics20-1"
+	
+	_, err = ibcState.createChannel(portID, channelID, connectionID, counterpartyPortID, counterpartyChannelID, channelVersion)
+	if err != nil {
+		t.Fatalf("첫 번째 채널 생성 실패: %v", err)
+	}
+
+	// 동일한 포트 ID와 채널 ID로 두 번째 채널 생성 시도
+	_, err = ibcState.createChannel(portID, channelID, connectionID, counterpartyPortID, counterpartyChannelID, channelVersion)
+	
+	// 오류가 발생해야 함
+	if err == nil {
+		t.Error("중복 채널 생성이 성공함")
+	}
+}
+
+// TestOpenNonExistentChannel는 존재하지 않는 채널 열기를 테스트합니다.
+func TestOpenNonExistentChannel(t *testing.T) {
+	// 새로운 IBC 상태 생성
+	ibcState := newIBCState()
+
+	// 존재하지 않는 포트 ID와 채널 ID
+	nonExistentPortID := "transfer"
+	nonExistentChannelID := "channel-999"
+	
+	// 존재하지 않는 채널 열기 시도
+	err := ibcState.openChannel(nonExistentPortID, nonExistentChannelID)
+	
+	// 오류가 발생해야 함
+	if err == nil {
+		t.Error("존재하지 않는 채널 열기가 성공함")
+	}
+}
+
+// TestCloseNonExistentChannel는 존재하지 않는 채널 닫기를 테스트합니다.
+func TestCloseNonExistentChannel(t *testing.T) {
+	// 새로운 IBC 상태 생성
+	ibcState := newIBCState()
+
+	// 존재하지 않는 포트 ID와 채널 ID
+	nonExistentPortID := "transfer"
+	nonExistentChannelID := "channel-999"
+	
+	// 존재하지 않는 채널 닫기 시도
+	err := ibcState.closeChannel(nonExistentPortID, nonExistentChannelID)
+	
+	// 오류가 발생해야 함
+	if err == nil {
+		t.Error("존재하지 않는 채널 닫기가 성공함")
+	}
+}
+
+// TestSendPacketWithNonExistentChannel는 존재하지 않는 채널로 패킷 전송을 테스트합니다.
+func TestSendPacketWithNonExistentChannel(t *testing.T) {
+	// 새로운 IBC 상태 생성
+	ibcState := newIBCState()
+
+	// 존재하지 않는 포트 ID와 채널 ID
+	nonExistentPortID := "transfer"
+	nonExistentChannelID := "channel-999"
+	
+	// 존재하지 않는 채널로 패킷 전송 시도
+	destPort := "transfer"
+	destChannel := "channel-1"
+	data := []byte("test data")
+	timeoutHeight := uint64(1000)
+	timeoutTimestamp := uint64(0)
+	
+	_, err := ibcState.sendPacket(nonExistentPortID, nonExistentChannelID, destPort, destChannel, data, timeoutHeight, timeoutTimestamp)
+	
+	// 오류가 발생해야 함
+	if err == nil {
+		t.Error("존재하지 않는 채널로 패킷 전송이 성공함")
+	}
+}
+
+// TestSendPacketWithClosedChannel는 닫힌 채널로 패킷 전송을 테스트합니다.
+func TestSendPacketWithClosedChannel(t *testing.T) {
+	// 새로운 IBC 상태 생성
+	ibcState := newIBCState()
+
+	// 클라이언트 생성
+	clientType := "tendermint"
+	consensusState := []byte("test consensus state")
+	trustingPeriod := uint64(100000)
+	
+	_, err := ibcState.createClient(testClientID, clientType, consensusState, trustingPeriod)
+	if err != nil {
+		t.Fatalf("클라이언트 생성 실패: %v", err)
+	}
+
+	// 연결 생성
+	connectionID := "connection-0"
+	counterpartyClientID := "07-tendermint-1"
+	counterpartyConnectionID := "connection-1"
+	connVersion := "1.0"
+	
+	_, err = ibcState.createConnection(connectionID, testClientID, counterpartyClientID, counterpartyConnectionID, connVersion)
+	if err != nil {
+		t.Fatalf("연결 생성 실패: %v", err)
+	}
+
+	// 연결 열기
+	err = ibcState.openConnection(connectionID)
+	if err != nil {
+		t.Fatalf("연결 열기 실패: %v", err)
+	}
+
+	// 채널 생성
+	portID := "transfer"
+	channelID := "channel-0"
+	counterpartyPortID := "transfer"
+	counterpartyChannelID := "channel-1"
+	channelVersion := "ics20-1"
+	
+	_, err = ibcState.createChannel(portID, channelID, connectionID, counterpartyPortID, counterpartyChannelID, channelVersion)
+	if err != nil {
+		t.Fatalf("채널 생성 실패: %v", err)
+	}
+
+	// 채널 열기
+	err = ibcState.openChannel(portID, channelID)
+	if err != nil {
+		t.Fatalf("채널 열기 실패: %v", err)
+	}
+
+	// 채널 닫기
+	err = ibcState.closeChannel(portID, channelID)
+	if err != nil {
+		t.Fatalf("채널 닫기 실패: %v", err)
+	}
+
+	// 닫힌 채널로 패킷 전송 시도
+	destPort := "transfer"
+	destChannel := "channel-1"
+	data := []byte("test data")
+	timeoutHeight := uint64(1000)
+	timeoutTimestamp := uint64(0)
+	
+	_, err = ibcState.sendPacket(portID, channelID, destPort, destChannel, data, timeoutHeight, timeoutTimestamp)
+	
+	// 오류가 발생해야 함
+	if err == nil {
+		t.Error("닫힌 채널로 패킷 전송이 성공함")
 	}
 }

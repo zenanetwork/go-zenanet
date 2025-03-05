@@ -49,9 +49,9 @@ func NewSlashingAdapter(eirene *core.Eirene) *SlashingAdapter {
 
 // 슬래싱 유형 상수
 const (
-	SlashingTypeDoubleSign  = 0 // 이중 서명
-	SlashingTypeDowntime    = 1 // 다운타임
-	SlashingTypeMisbehavior = 2 // 기타 악의적 행동
+	SlashingTypeDoubleSign  = "double_sign"
+	SlashingTypeDowntime    = "downtime"
+	SlashingTypeMisbehavior = "misbehavior"
 )
 
 // 슬래싱 매개변수 상수
@@ -73,30 +73,37 @@ const (
 
 // SlashingEvidence는 슬래싱 증거를 나타냅니다.
 type SlashingEvidence struct {
-	Type         uint8          `json:"type"`         // 슬래싱 유형
-	Validator    common.Address `json:"validator"`    // 검증자 주소
-	Height       uint64         `json:"height"`       // 증거가 발견된 블록 높이
-	Time         uint64         `json:"time"`         // 증거가 발견된 시간
-	Evidence     []byte         `json:"evidence"`     // 증거 데이터
-	ReporterAddr common.Address `json:"reporterAddr"` // 신고자 주소 (있는 경우)
+	Type      string         // 슬래싱 유형
+	Validator common.Address // 검증자 주소
+	Height    uint64         // 증거가 발생한 블록 높이
+	Time      time.Time      // 증거가 발생한 시간
+	Data      []byte         // 추가 데이터
 }
 
 // DoubleSignEvidence는 이중 서명 증거를 나타냅니다.
 type DoubleSignEvidence struct {
-	Height     uint64         `json:"height"`     // 이중 서명이 발생한 블록 높이
-	Round      uint64         `json:"round"`      // 이중 서명이 발생한 라운드
-	Validator  common.Address `json:"validator"`  // 검증자 주소
-	Signature1 []byte         `json:"signature1"` // 첫 번째 서명
-	Signature2 []byte         `json:"signature2"` // 두 번째 서명
+	Height     uint64         // 블록 높이
+	Validator  common.Address // 검증자 주소
+	VoteA      []byte         // 첫 번째 투표
+	VoteB      []byte         // 두 번째 투표
+	Timestamp  time.Time      // 증거가 발생한 시간
 }
 
 // DowntimeEvidence는 다운타임 증거를 나타냅니다.
 type DowntimeEvidence struct {
-	Validator     common.Address `json:"validator"`     // 검증자 주소
-	MissedBlocks  []uint64       `json:"missedBlocks"`  // 놓친 블록 목록
-	StartHeight   uint64         `json:"startHeight"`   // 시작 블록 높이
-	EndHeight     uint64         `json:"endHeight"`     // 종료 블록 높이
-	MissedPercent uint64         `json:"missedPercent"` // 놓친 블록 비율 (%)
+	Validator     common.Address // 검증자 주소
+	MissedBlocks  []uint64       // 놓친 블록 목록
+	StartHeight   uint64         // 시작 블록 높이
+	EndHeight     uint64         // 종료 블록 높이
+	MissedPercent float64        // 놓친 블록 비율
+}
+
+// MisbehaviorEvidence는 기타 악의적 행동 증거를 나타냅니다.
+type MisbehaviorEvidence struct {
+	Validator common.Address // 검증자 주소
+	Height    uint64         // 블록 높이
+	Type      string         // 악의적 행동 유형
+	Data      []byte         // 추가 데이터
 }
 
 // SlashingState는 슬래싱 상태를 나타냅니다.
@@ -227,8 +234,8 @@ func (ss *SlashingState) handleValidatorSignature(validator common.Address, heig
 				Type:      SlashingTypeDowntime,
 				Validator: validator,
 				Height:    height,
-				Time:      uint64(time.Now().Unix()),
-				Evidence:  nil, // 다운타임은 별도의 증거 데이터가 필요 없음
+				Time:      time.Now(),
+				Data:      nil, // 다운타임은 별도의 증거 데이터가 필요 없음
 			}
 
 			ss.addEvidence(evidence)
@@ -246,15 +253,15 @@ func (ss *SlashingState) handleDoubleSign(validator common.Address, height uint6
 		Type:      SlashingTypeDoubleSign,
 		Validator: validator,
 		Height:    height,
-		Time:      uint64(time.Now().Unix()),
-		Evidence:  evidence,
+		Time:      time.Now(),
+		Data:      evidence,
 	}
 
 	ss.addEvidence(slashingEvidence)
 }
 
 // getSlashRatio는 슬래싱 유형에 따른 슬래싱 비율을 반환합니다.
-func (ss *SlashingState) getSlashRatio(slashType uint8) uint64 {
+func (ss *SlashingState) getSlashRatio(slashType string) uint64 {
 	switch slashType {
 	case SlashingTypeDoubleSign:
 		return ss.DoubleSignSlashRatio
@@ -268,7 +275,7 @@ func (ss *SlashingState) getSlashRatio(slashType uint8) uint64 {
 }
 
 // getJailPeriod는 슬래싱 유형에 따른 감금 기간을 반환합니다.
-func (ss *SlashingState) getJailPeriod(slashType uint8) uint64 {
+func (ss *SlashingState) getJailPeriod(slashType string) uint64 {
 	switch slashType {
 	case SlashingTypeDoubleSign:
 		return ss.DoubleSignJailPeriod
@@ -360,11 +367,11 @@ func (a *SlashingAdapter) VerifyDoubleSign(evidence DoubleSignEvidence) bool {
 	// 두 서명이 모두 유효한지 확인
 	// 실제 구현에서는 더 복잡한 검증 로직이 필요함
 
-	return evidence.Signature1 != nil &&
-		evidence.Signature2 != nil &&
-		len(evidence.Signature1) > 0 &&
-		len(evidence.Signature2) > 0 &&
-		!bytes.Equal(evidence.Signature1, evidence.Signature2)
+	return evidence.VoteA != nil &&
+		evidence.VoteB != nil &&
+		len(evidence.VoteA) > 0 &&
+		len(evidence.VoteB) > 0 &&
+		!bytes.Equal(evidence.VoteA, evidence.VoteB)
 }
 
 // ReportDoubleSign은 이중 서명을 신고합니다.
@@ -379,12 +386,11 @@ func (a *SlashingAdapter) ReportDoubleSign(reporter common.Address, evidence Dou
 
 	// 슬래싱 증거 생성
 	slashingEvidence := SlashingEvidence{
-		Type:         SlashingTypeDoubleSign,
-		Validator:    evidence.Validator,
-		Height:       evidence.Height,
-		Time:         uint64(time.Now().Unix()),
-		Evidence:     []byte{}, // 실제 구현에서는 증거 데이터 저장
-		ReporterAddr: reporter,
+		Type:      SlashingTypeDoubleSign,
+		Validator: evidence.Validator,
+		Height:    evidence.Height,
+		Time:      time.Now(),
+		Data:      append(evidence.VoteA, evidence.VoteB...),
 	}
 
 	// 증거 추가
