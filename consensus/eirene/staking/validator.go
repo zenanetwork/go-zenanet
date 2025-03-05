@@ -14,27 +14,18 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-zenanet library. If not, see <http://www.gnu.org/licenses/>.
 
+// Package staking implements the staking module for the Eirene consensus algorithm.
 package staking
 
 import (
 	"errors"
 	"math/big"
 	"sort"
-	"sync"
 
 	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/consensus/eirene/utils"
 	"github.com/zenanetwork/go-zenanet/core/types"
-	"github.com/zenanetwork/go-zenanet/ethdb"
 	"github.com/zenanetwork/go-zenanet/log"
-	"github.com/zenanetwork/go-zenanet/rlp"
-)
-
-// 검증자 상태 상수
-const (
-	ValidatorStatusActive    = utils.ValidatorStatusActive    // 활성 상태
-	ValidatorStatusJailed    = utils.ValidatorStatusJailed    // 감금 상태
-	ValidatorStatusUnbonding = utils.ValidatorStatusUnbonding // 언본딩 상태
 )
 
 // 검증자 성능 가중치 상수
@@ -67,21 +58,41 @@ const (
 	JailPeriod = 86400 // 1일 (초 단위)
 )
 
-// ValidatorDelegation은 검증자에게 위임된 정보를 나타냅니다.
-type ValidatorDelegation struct {
-	Delegator          common.Address `json:"delegator"`          // 위임자 주소
-	Amount             *big.Int       `json:"amount"`             // 위임 양
-	AccumulatedRewards *big.Int       `json:"accumulatedRewards"` // 누적 보상
-	StartBlock         uint64         `json:"startBlock"`         // 위임 시작 블록
-	EndBlock           uint64         `json:"endBlock"`           // 위임 종료 블록 (언본딩 중인 경우)
+// ValidatorStatus는 검증자의 상태를 나타냅니다.
+type ValidatorStatus int
+
+const (
+	ValidatorStatusUnbonded  ValidatorStatus = iota // 언본딩 상태 (활성화되지 않음)
+	ValidatorStatusBonded                           // 본딩 상태 (활성화됨)
+	ValidatorStatusUnbonding                        // 언본딩 중 (활성화 해제 중)
+	ValidatorStatusJailed                           // 감금 상태
+)
+
+// String은 ValidatorStatus를 문자열로 변환합니다.
+func (s ValidatorStatus) String() string {
+	switch s {
+	case ValidatorStatusUnbonded:
+		return "Unbonded"
+	case ValidatorStatusBonded:
+		return "Bonded"
+	case ValidatorStatusUnbonding:
+		return "Unbonding"
+	case ValidatorStatusJailed:
+		return "Jailed"
+	default:
+		return "Unknown"
+	}
 }
 
-// Validator는 검증자 정보를 나타냅니다.
+// Validator는 검증자 정보를 담고 있습니다.
 type Validator struct {
-	Address     common.Address `json:"address"`     // 검증자 주소
-	PubKey      []byte         `json:"pubKey"`      // 검증자 공개키
-	VotingPower *big.Int       `json:"votingPower"` // 투표 파워 (스테이킹 양)
-	Status      uint8          `json:"status"`      // 검증자 상태
+	Address     common.Address      // 검증자 주소
+	PubKey      []byte              // 검증자 공개 키
+	VotingPower *big.Int            // 투표력 (스테이킹된 토큰 양)
+	Commission  *big.Int            // 커미션 비율 (0-100%)
+	Description ValidatorDescription // 검증자 설명
+	Status      ValidatorStatus     // 검증자 상태
+	Delegations []*ValidatorDelegation // 위임 정보
 
 	// 성능 지표
 	BlocksProposed  uint64 `json:"blocksProposed"`  // 제안한 블록 수
@@ -91,12 +102,8 @@ type Validator struct {
 	GovernanceVotes uint64 `json:"governanceVotes"` // 참여한 거버넌스 투표 수
 
 	// 위임 정보
-	SelfStake   *big.Int                                `json:"selfStake"`   // 자체 스테이킹 양
-	Delegations map[common.Address]*ValidatorDelegation `json:"delegations"` // 위임 정보
-
-	// 보상 정보
+	SelfStake   *big.Int `json:"selfStake"`   // 자체 스테이킹 양
 	AccumulatedRewards *big.Int `json:"accumulatedRewards"` // 누적 보상
-	Commission         uint64   `json:"commission"`         // 수수료 (%)
 	LastRewardBlock    uint64   `json:"lastRewardBlock"`    // 마지막 보상 블록
 
 	// 슬래싱 정보
@@ -105,111 +112,149 @@ type Validator struct {
 	LastSlashedBlock uint64 `json:"lastSlashedBlock"` // 마지막 슬래싱 블록
 }
 
-// ValidatorSet은 검증자 집합을 나타냅니다.
-type ValidatorSet struct {
-	Validators  map[common.Address]*Validator `json:"validators"`  // 검증자 맵
-	TotalStake  *big.Int                      `json:"totalStake"`  // 총 스테이킹 양
-	BlockHeight uint64                        `json:"blockHeight"` // 마지막 업데이트 블록 높이
-
-	lock sync.RWMutex // 동시성 제어를 위한 잠금
+// NewValidator는 새로운 Validator 인스턴스를 생성합니다.
+func NewValidator(address common.Address, pubKey []byte, votingPower *big.Int, commission *big.Int, description ValidatorDescription) *Validator {
+	return &Validator{
+		Address:     address,
+		PubKey:      pubKey,
+		VotingPower: votingPower,
+		Commission:  commission,
+		Description: description,
+		Status:      ValidatorStatusUnbonded,
+		Delegations: []*ValidatorDelegation{},
+		SelfStake:   big.NewInt(0),
+		AccumulatedRewards: big.NewInt(0),
+	}
 }
 
-// newValidatorSet은 새로운 검증자 집합을 생성합니다.
-func newValidatorSet() *ValidatorSet {
+// AddDelegation은 검증자에게 위임을 추가합니다.
+func (v *Validator) AddDelegation(delegation *ValidatorDelegation) {
+	v.Delegations = append(v.Delegations, delegation)
+	v.VotingPower = new(big.Int).Add(v.VotingPower, delegation.Amount)
+}
+
+// RemoveDelegation은 검증자에게서 위임을 제거합니다.
+func (v *Validator) RemoveDelegation(delegator common.Address) *ValidatorDelegation {
+	for i, d := range v.Delegations {
+		if d.Delegator == delegator {
+			v.VotingPower = new(big.Int).Sub(v.VotingPower, d.Amount)
+			v.Delegations = append(v.Delegations[:i], v.Delegations[i+1:]...)
+			return d
+		}
+	}
+	return nil
+}
+
+// GetDelegation은 특정 위임자의 위임 정보를 반환합니다.
+func (v *Validator) GetDelegation(delegator common.Address) *ValidatorDelegation {
+	for _, d := range v.Delegations {
+		if d.Delegator == delegator {
+			return d
+		}
+	}
+	return nil
+}
+
+// UpdateDelegation은 특정 위임자의 위임 정보를 업데이트합니다.
+func (v *Validator) UpdateDelegation(delegator common.Address, amount *big.Int) {
+	for _, d := range v.Delegations {
+		if d.Delegator == delegator {
+			v.VotingPower = new(big.Int).Sub(v.VotingPower, d.Amount)
+			d.Amount = amount
+			v.VotingPower = new(big.Int).Add(v.VotingPower, amount)
+			return
+		}
+	}
+}
+
+// ToCosmosValidator는 Validator를 Cosmos SDK의 Validator 형식으로 변환합니다.
+func (v *Validator) ToCosmosValidator() interface{} {
+	// Cosmos SDK의 Validator 형식으로 변환하는 로직 구현
+	// 실제 구현에서는 Cosmos SDK의 타입을 임포트하여 변환해야 함
+	return nil
+}
+
+// FromCosmosValidator는 Cosmos SDK의 Validator를 Validator로 변환합니다.
+func FromCosmosValidator(cosmosValidator interface{}) *Validator {
+	// Cosmos SDK의 Validator를 Validator로 변환하는 로직 구현
+	// 실제 구현에서는 Cosmos SDK의 타입을 임포트하여 변환해야 함
+	return nil
+}
+
+// ValidatorSet은 검증자 집합을 관리합니다.
+type ValidatorSet struct {
+	Validators []*Validator // 검증자 목록
+	BlockHeight uint64      // 마지막 업데이트 블록 높이
+}
+
+// NewValidatorSet은 새로운 ValidatorSet 인스턴스를 생성합니다.
+func NewValidatorSet() *ValidatorSet {
 	return &ValidatorSet{
-		Validators:  make(map[common.Address]*Validator),
-		TotalStake:  new(big.Int),
+		Validators: []*Validator{},
 		BlockHeight: 0,
 	}
 }
 
-// loadValidatorSet은 데이터베이스에서 검증자 집합을 로드합니다.
-func loadValidatorSet(db ethdb.Database) (*ValidatorSet, error) {
-	data, err := db.Get([]byte("eirene-validators"))
-	if err != nil {
-		// 데이터가 없으면 새로운 검증자 집합 생성
-		return newValidatorSet(), nil
-	}
-
-	var validatorSet ValidatorSet
-	if err := rlp.DecodeBytes(data, &validatorSet); err != nil {
-		return nil, err
-	}
-
-	return &validatorSet, nil
+// AddValidator는 검증자 집합에 검증자를 추가합니다.
+func (vs *ValidatorSet) AddValidator(validator *Validator) {
+	vs.Validators = append(vs.Validators, validator)
 }
 
-// store는 검증자 집합을 데이터베이스에 저장합니다.
-func (vs *ValidatorSet) store(db ethdb.Database) error {
-	data, err := rlp.EncodeToBytes(vs)
-	if err != nil {
-		return err
-	}
-
-	return db.Put([]byte("eirene-validators"), data)
-}
-
-// addValidator는 새로운 검증자를 추가합니다.
-func (vs *ValidatorSet) addValidator(validator *Validator) {
-	vs.Validators[validator.Address] = validator
-	vs.TotalStake = new(big.Int).Add(vs.TotalStake, validator.VotingPower)
-}
-
-// removeValidator는 검증자를 제거합니다.
-func (vs *ValidatorSet) removeValidator(address common.Address) {
-	validator, exists := vs.Validators[address]
-	if !exists {
-		return
-	}
-
-	vs.TotalStake = new(big.Int).Sub(vs.TotalStake, validator.VotingPower)
-	delete(vs.Validators, address)
-}
-
-// updateValidator는 검증자 정보를 업데이트합니다.
-func (vs *ValidatorSet) updateValidator(validator *Validator) {
-	oldValidator, exists := vs.Validators[validator.Address]
-	if exists {
-		vs.TotalStake = new(big.Int).Sub(vs.TotalStake, oldValidator.VotingPower)
-	}
-
-	vs.Validators[validator.Address] = validator
-	vs.TotalStake = new(big.Int).Add(vs.TotalStake, validator.VotingPower)
-}
-
-// getActiveValidators는 활성 검증자 목록을 반환합니다.
-func (vs *ValidatorSet) getActiveValidators() []*Validator {
-	activeValidators := make([]*Validator, 0)
-
-	for _, validator := range vs.Validators {
-		if validator.Status == ValidatorStatusActive {
-			activeValidators = append(activeValidators, validator)
+// RemoveValidator는 검증자 집합에서 검증자를 제거합니다.
+func (vs *ValidatorSet) RemoveValidator(address common.Address) *Validator {
+	for i, v := range vs.Validators {
+		if v.Address == address {
+			vs.Validators = append(vs.Validators[:i], vs.Validators[i+1:]...)
+			return v
 		}
 	}
+	return nil
+}
 
+// GetValidator는 주소로 검증자를 조회합니다.
+func (vs *ValidatorSet) GetValidator(address common.Address) *Validator {
+	for _, v := range vs.Validators {
+		if v.Address == address {
+			return v
+		}
+	}
+	return nil
+}
+
+// GetValidators는 모든 검증자를 반환합니다.
+func (vs *ValidatorSet) GetValidators() []*Validator {
+	return vs.Validators
+}
+
+// GetActiveValidators는 활성화된 검증자만 반환합니다.
+func (vs *ValidatorSet) getActiveValidators() []*Validator {
+	var activeValidators []*Validator
+	for _, v := range vs.Validators {
+		if v.Status == ValidatorStatusBonded {
+			activeValidators = append(activeValidators, v)
+		}
+	}
 	return activeValidators
 }
 
-// getTopValidators는 상위 N개의 검증자를 반환합니다.
-func (vs *ValidatorSet) getTopValidators(n int) []*Validator {
-	// 모든 검증자를 슬라이스로 변환
-	validators := make([]*Validator, 0, len(vs.Validators))
-	for _, validator := range vs.Validators {
-		if validator.Status == ValidatorStatusActive {
-			validators = append(validators, validator)
+// GetTotalVotingPower는 모든 검증자의 총 투표력을 반환합니다.
+func (vs *ValidatorSet) GetTotalVotingPower() *big.Int {
+	total := big.NewInt(0)
+	for _, v := range vs.Validators {
+		total = new(big.Int).Add(total, v.VotingPower)
+	}
+	return total
+}
+
+// GetTotalActiveVotingPower는 활성화된 검증자의 총 투표력을 반환합니다.
+func (vs *ValidatorSet) GetTotalActiveVotingPower() *big.Int {
+	total := big.NewInt(0)
+	for _, v := range vs.Validators {
+		if v.Status == ValidatorStatusBonded {
+			total = new(big.Int).Add(total, v.VotingPower)
 		}
 	}
-
-	// 검증자를 투표 파워에 따라 정렬
-	sort.Slice(validators, func(i, j int) bool {
-		return validators[i].VotingPower.Cmp(validators[j].VotingPower) > 0
-	})
-
-	// 상위 N개 반환 (또는 전체 검증자 수가 N보다 작으면 전체 반환)
-	if len(validators) <= n {
-		return validators
-	}
-	return validators[:n]
+	return total
 }
 
 // calculateValidatorScore는 검증자의 점수를 계산합니다.
@@ -313,23 +358,25 @@ func (vs *ValidatorSet) updateValidatorPerformance(header *types.Header, propose
 	}
 
 	// 제안자의 제안한 블록 수 증가
-	if proposer, exists := vs.Validators[proposer]; exists {
-		proposer.BlocksProposed++
-		proposer.BlocksMissed-- // 제안자는 블록을 놓치지 않음
+	proposerValidator := vs.GetValidator(proposer)
+	if proposerValidator != nil {
+		proposerValidator.BlocksProposed++
+		proposerValidator.BlocksMissed-- // 제안자는 블록을 놓치지 않음
 	}
 
 	// 서명자들의 서명한 블록 수 증가
 	for _, signer := range signers {
-		if validator, exists := vs.Validators[signer]; exists {
-			validator.BlocksSigned++
-			validator.BlocksMissed-- // 서명자는 블록을 놓치지 않음
+		signerValidator := vs.GetValidator(signer)
+		if signerValidator != nil {
+			signerValidator.BlocksSigned++
+			signerValidator.BlocksMissed-- // 서명자는 블록을 놓치지 않음
 		}
 	}
 
 	// 업타임 계산 (최근 100개 블록 기준)
 	if vs.BlockHeight%100 == 0 {
 		for _, validator := range vs.Validators {
-			if validator.Status == ValidatorStatusActive {
+			if validator.Status == ValidatorStatusBonded {
 				missedRatio := float64(validator.BlocksMissed) / 100.0
 				uptime := uint64((1.0 - missedRatio) * 100)
 				validator.Uptime = uptime
@@ -345,8 +392,8 @@ func (vs *ValidatorSet) updateValidatorPerformance(header *types.Header, propose
 
 // jailValidator는 검증자를 감금합니다.
 func (vs *ValidatorSet) jailValidator(address common.Address, jailUntil uint64) {
-	validator, exists := vs.Validators[address]
-	if !exists {
+	validator := vs.GetValidator(address)
+	if validator == nil {
 		return
 	}
 
@@ -360,8 +407,8 @@ func (vs *ValidatorSet) jailValidator(address common.Address, jailUntil uint64) 
 
 // unjailValidator는 검증자의 감금을 해제합니다.
 func (vs *ValidatorSet) unjailValidator(address common.Address) {
-	validator, exists := vs.Validators[address]
-	if !exists {
+	validator := vs.GetValidator(address)
+	if validator == nil {
 		return
 	}
 
@@ -373,14 +420,14 @@ func (vs *ValidatorSet) unjailValidator(address common.Address) {
 		return
 	}
 
-	validator.Status = ValidatorStatusActive
+	validator.Status = ValidatorStatusBonded
 	log.Info("Validator unjailed", "address", address)
 }
 
 // slashValidator는 검증자를 슬래싱합니다.
 func (vs *ValidatorSet) slashValidator(address common.Address, slashRatio uint64) {
-	validator, exists := vs.Validators[address]
-	if !exists {
+	validator := vs.GetValidator(address)
+	if validator == nil {
 		return
 	}
 
@@ -388,7 +435,6 @@ func (vs *ValidatorSet) slashValidator(address common.Address, slashRatio uint64
 	slashAmount := new(big.Int).Mul(validator.VotingPower, big.NewInt(int64(slashRatio)))
 	slashAmount = new(big.Int).Div(slashAmount, big.NewInt(100))
 
-	vs.TotalStake = new(big.Int).Sub(vs.TotalStake, slashAmount)
 	validator.VotingPower = new(big.Int).Sub(validator.VotingPower, slashAmount)
 
 	// 자체 스테이킹 및 위임 금액 감소
@@ -417,28 +463,24 @@ func (v *Validator) GetVotingPower() *big.Int {
 
 // GetStatus는 검증자의 상태를 반환합니다.
 func (v *Validator) GetStatus() uint8 {
-	return v.Status
+	return uint8(v.Status)
 }
 
 // IsActive는 검증자가 활성 상태인지 여부를 반환합니다.
 func (v *Validator) IsActive() bool {
-	return v.Status == ValidatorStatusActive
+	return v.Status == ValidatorStatusBonded
 }
 
 // GetValidatorCount는 검증자 집합의 총 검증자 수를 반환합니다.
 func (vs *ValidatorSet) GetValidatorCount() int {
-	vs.lock.RLock()
-	defer vs.lock.RUnlock()
 	return len(vs.Validators)
 }
 
 // GetActiveValidatorCount는 검증자 집합의 활성 검증자 수를 반환합니다.
 func (vs *ValidatorSet) GetActiveValidatorCount() int {
-	vs.lock.RLock()
-	defer vs.lock.RUnlock()
 	count := 0
 	for _, v := range vs.Validators {
-		if v.Status == ValidatorStatusActive {
+		if v.Status == ValidatorStatusBonded {
 			count++
 		}
 	}
@@ -447,29 +489,24 @@ func (vs *ValidatorSet) GetActiveValidatorCount() int {
 
 // GetTotalStake는 검증자 집합의 총 스테이킹 양을 반환합니다.
 func (vs *ValidatorSet) GetTotalStake() *big.Int {
-	vs.lock.RLock()
-	defer vs.lock.RUnlock()
-	return new(big.Int).Set(vs.TotalStake)
+	return vs.GetTotalVotingPower()
 }
 
 // GetValidatorByAddress는 주소로 검증자를 조회합니다.
 func (vs *ValidatorSet) GetValidatorByAddress(address common.Address) utils.ValidatorInterface {
-	vs.lock.RLock()
-	defer vs.lock.RUnlock()
-	validator, exists := vs.Validators[address]
-	if !exists {
-		return nil
+	for _, v := range vs.Validators {
+		if v.Address == address {
+			return v
+		}
 	}
-	return validator
+	return nil
 }
 
 // GetActiveValidators는 활성 상태인 검증자 목록을 반환합니다.
 func (vs *ValidatorSet) GetActiveValidators() []utils.ValidatorInterface {
-	vs.lock.RLock()
-	defer vs.lock.RUnlock()
 	var activeValidators []utils.ValidatorInterface
 	for _, v := range vs.Validators {
-		if v.Status == ValidatorStatusActive {
+		if v.Status == ValidatorStatusBonded {
 			activeValidators = append(activeValidators, v)
 		}
 	}
@@ -478,10 +515,12 @@ func (vs *ValidatorSet) GetActiveValidators() []utils.ValidatorInterface {
 
 // Contains는 주어진 주소의 검증자가 검증자 집합에 포함되어 있는지 확인합니다.
 func (vs *ValidatorSet) Contains(address common.Address) bool {
-	vs.lock.RLock()
-	defer vs.lock.RUnlock()
-	_, exists := vs.Validators[address]
-	return exists
+	for _, v := range vs.Validators {
+		if v.Address == address {
+			return true
+		}
+	}
+	return false
 }
 
 // processEpochTransition은 에포크 전환 시 검증자 집합을 업데이트합니다.
@@ -489,7 +528,7 @@ func (vs *ValidatorSet) processEpochTransition(totalBlocks uint64) {
 	// 감금 해제 처리
 	for _, validator := range vs.Validators {
 		if validator.Status == ValidatorStatusJailed && vs.BlockHeight >= validator.JailedUntil {
-			validator.Status = ValidatorStatusActive
+			validator.Status = ValidatorStatusBonded
 		}
 	}
 
@@ -497,78 +536,6 @@ func (vs *ValidatorSet) processEpochTransition(totalBlocks uint64) {
 	selectedValidators := vs.selectValidators(totalBlocks)
 
 	log.Info("Epoch transition: selected validators", "count", len(selectedValidators))
-}
-
-// addDelegation은 위임을 추가합니다.
-func (vs *ValidatorSet) addDelegation(validatorAddr common.Address, delegatorAddr common.Address, amount *big.Int, startBlock uint64) error {
-	validator, exists := vs.Validators[validatorAddr]
-	if !exists {
-		return ErrValidatorNotFound
-	}
-
-	if validator.Status != ValidatorStatusActive {
-		return ErrValidatorNotActive
-	}
-
-	// 기존 위임이 있는지 확인
-	delegation, exists := validator.Delegations[delegatorAddr]
-	if exists {
-		// 기존 위임에 추가
-		delegation.Amount = new(big.Int).Add(delegation.Amount, amount)
-	} else {
-		// 새 위임 생성
-		delegation = &ValidatorDelegation{
-			Delegator:          delegatorAddr,
-			Amount:             new(big.Int).Set(amount),
-			AccumulatedRewards: new(big.Int),
-			StartBlock:         startBlock,
-			EndBlock:           0,
-		}
-		validator.Delegations[delegatorAddr] = delegation
-	}
-
-	// 검증자의 투표 파워 증가
-	validator.VotingPower = new(big.Int).Add(validator.VotingPower, amount)
-
-	// 총 스테이킹 양 증가
-	vs.TotalStake = new(big.Int).Add(vs.TotalStake, amount)
-
-	return nil
-}
-
-// removeDelegation은 위임을 제거합니다.
-func (vs *ValidatorSet) removeDelegation(validatorAddr common.Address, delegatorAddr common.Address, amount *big.Int, endBlock uint64) error {
-	validator, exists := vs.Validators[validatorAddr]
-	if !exists {
-		return ErrValidatorNotFound
-	}
-
-	delegation, exists := validator.Delegations[delegatorAddr]
-	if !exists {
-		return ErrDelegationNotFound
-	}
-
-	// 위임 금액이 충분한지 확인
-	if delegation.Amount.Cmp(amount) < 0 {
-		return ErrInsufficientDelegation
-	}
-
-	// 위임 금액 감소
-	delegation.Amount = new(big.Int).Sub(delegation.Amount, amount)
-	delegation.EndBlock = endBlock
-
-	// 위임 금액이 0이면 위임 제거
-	if delegation.Amount.Cmp(big.NewInt(0)) == 0 {
-		delete(validator.Delegations, delegatorAddr)
-	}
-
-	// 검증자의 투표 파워 감소
-	validator.VotingPower = new(big.Int).Sub(validator.VotingPower, amount)
-
-	// 총 스테이킹 양 감소
-	vs.TotalStake = new(big.Int).Sub(vs.TotalStake, amount)
-
-	return nil
 }
 
 // 오류 정의
