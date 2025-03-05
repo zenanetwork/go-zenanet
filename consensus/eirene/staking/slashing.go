@@ -291,7 +291,10 @@ func (ss *SlashingState) getJailPeriod(slashType string) uint64 {
 // ProcessSlashing은 슬래싱 처리를 수행합니다.
 func (a *SlashingAdapter) ProcessSlashing(validatorSet *ValidatorSet, currentBlock uint64) {
 	// 모든 검증자에 대해 처리
-	for addr, validator := range validatorSet.Validators {
+	for _, validator := range validatorSet.Validators {
+		// 검증자 주소 가져오기
+		addr := validator.Address
+		
 		// 이미 감금된 검증자는 건너뜀
 		if validator.Status == ValidatorStatusJailed {
 			continue

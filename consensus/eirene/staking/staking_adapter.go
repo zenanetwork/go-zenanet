@@ -101,10 +101,10 @@ func (a *StakingAdapter) Stake(state *state.StateDB, address common.Address, amo
 		Address:     address,
 		PubKey:      pubKey,
 		VotingPower: amount,
-		Status:      ValidatorStatusActive,
-		Commission:  uint64(commission.Uint64()),
+		Status:      ValidatorStatusBonded,
+		Commission:  new(big.Int).Set(commission),
 		SelfStake:   amount,
-		Delegations: make(map[common.Address]*ValidatorDelegation),
+		Delegations: []*ValidatorDelegation{},
 		// 기타 필드 초기화
 		BlocksProposed:     0,
 		BlocksSigned:       0,
@@ -126,7 +126,7 @@ func (a *StakingAdapter) Stake(state *state.StateDB, address common.Address, amo
 		StartBlock:         0, // 현재 블록 높이 사용 (간단히 0으로 설정)
 		EndBlock:           0, // 종료 블록 없음
 	}
-	validator.Delegations[address] = selfDelegation
+	validator.Delegations = append(validator.Delegations, selfDelegation)
 
 	// 검증자 추가
 	err = a.addValidator(validator)
@@ -190,8 +190,8 @@ func (a *StakingAdapter) Delegate(state *state.StateDB, delegator common.Address
 	}
 
 	// 기존 위임이 있는지 확인
-	for addr, delegation := range validatorInfo.Delegations {
-		if addr == delegator {
+	for _, delegation := range validatorInfo.Delegations {
+		if delegation.Delegator == delegator {
 			// 기존 위임에 추가
 			delegation.Amount = new(big.Int).Add(delegation.Amount, amount)
 
@@ -223,7 +223,7 @@ func (a *StakingAdapter) Delegate(state *state.StateDB, delegator common.Address
 		StartBlock:         0, // 현재 블록 높이 사용 (간단히 0으로 설정)
 		EndBlock:           0, // 종료 블록 없음
 	}
-	validatorInfo.Delegations[delegator] = newDelegation
+	validatorInfo.Delegations = append(validatorInfo.Delegations, newDelegation)
 
 	// 검증자 투표력 업데이트
 	validatorInfo.VotingPower = new(big.Int).Add(validatorInfo.VotingPower, amount)
@@ -255,43 +255,44 @@ func (a *StakingAdapter) Undelegate(state *state.StateDB, delegator common.Addre
 	}
 
 	// 위임 확인
-	delegation, exists := validatorInfo.Delegations[delegator]
-	if !exists {
-		return fmt.Errorf("delegation not found for delegator %s and validator %s", delegator.Hex(), validator.Hex())
+	for _, delegation := range validatorInfo.Delegations {
+		if delegation.Delegator == delegator {
+			// 위임 금액 확인
+			if delegation.Amount.Cmp(amount) < 0 {
+				return fmt.Errorf("insufficient delegation amount: %s < %s", delegation.Amount.String(), amount.String())
+			}
+
+			// 검증자 투표력 업데이트
+			validatorInfo.VotingPower = new(big.Int).Sub(validatorInfo.VotingPower, amount)
+
+			// 위임 업데이트 또는 삭제
+			if delegation.Amount.Cmp(amount) == 0 {
+				// 위임 삭제
+				validatorInfo.Delegations = validatorInfo.Delegations[:0]
+			} else {
+				// 위임 감소
+				delegation.Amount = new(big.Int).Sub(delegation.Amount, amount)
+			}
+
+			// 검증자 업데이트
+			err = a.updateValidator(validatorInfo)
+			if err != nil {
+				return err
+			}
+
+			// 언위임 기간 설정 (실제 구현에서는 언위임 기간 후 토큰 반환)
+			// 여기서는 간단히 바로 반환
+			// 실제 구현에서는 state.AddBalance(delegator, amount, reason) 형태로 호출
+			// 여기서는 간단히 구현
+			// state.AddBalance(delegator, amount)
+
+			a.logger.Info("Delegation removed", "delegator", delegator.Hex(), "validator", validator.Hex(), "amount", amount.String())
+
+			return nil
+		}
 	}
 
-	// 위임 금액 확인
-	if delegation.Amount.Cmp(amount) < 0 {
-		return fmt.Errorf("insufficient delegation amount: %s < %s", delegation.Amount.String(), amount.String())
-	}
-
-	// 검증자 투표력 업데이트
-	validatorInfo.VotingPower = new(big.Int).Sub(validatorInfo.VotingPower, amount)
-
-	// 위임 업데이트 또는 삭제
-	if delegation.Amount.Cmp(amount) == 0 {
-		// 위임 삭제
-		delete(validatorInfo.Delegations, delegator)
-	} else {
-		// 위임 감소
-		delegation.Amount = new(big.Int).Sub(delegation.Amount, amount)
-	}
-
-	// 검증자 업데이트
-	err = a.updateValidator(validatorInfo)
-	if err != nil {
-		return err
-	}
-
-	// 언위임 기간 설정 (실제 구현에서는 언위임 기간 후 토큰 반환)
-	// 여기서는 간단히 바로 반환
-	// 실제 구현에서는 state.AddBalance(delegator, amount, reason) 형태로 호출
-	// 여기서는 간단히 구현
-	// state.AddBalance(delegator, amount)
-
-	a.logger.Info("Delegation removed", "delegator", delegator.Hex(), "validator", validator.Hex(), "amount", amount.String())
-
-	return nil
+	return fmt.Errorf("delegation not found for delegator %s and validator %s", delegator.Hex(), validator.Hex())
 }
 
 // Redelegate는 위임된 토큰을 다른 검증자에게 재위임합니다.
@@ -327,7 +328,7 @@ func (a *StakingAdapter) Redelegate(state *state.StateDB, delegator common.Addre
 	// 소스 위임 업데이트 또는 삭제
 	if srcDelegation.Amount.Cmp(amount) == 0 {
 		// 위임 삭제
-		delete(srcValidatorInfo.Delegations, delegator)
+		srcValidatorInfo.Delegations = srcValidatorInfo.Delegations[:0]
 	} else {
 		// 위임 감소
 		srcDelegation.Amount = new(big.Int).Sub(srcDelegation.Amount, amount)
@@ -353,7 +354,7 @@ func (a *StakingAdapter) Redelegate(state *state.StateDB, delegator common.Addre
 			StartBlock:         0, // 현재 블록 높이 사용 (간단히 0으로 설정)
 			EndBlock:           0, // 종료 블록 없음
 		}
-		dstValidatorInfo.Delegations[delegator] = newDelegation
+		dstValidatorInfo.Delegations = append(dstValidatorInfo.Delegations, newDelegation)
 	}
 
 	// 대상 검증자 투표력 업데이트
@@ -377,7 +378,7 @@ func (a *StakingAdapter) GetValidator(address common.Address) (*Validator, error
 	return &Validator{
 		Address:     address,
 		VotingPower: big.NewInt(0),
-		Delegations: make(map[common.Address]*ValidatorDelegation),
+		Delegations: []*ValidatorDelegation{},
 	}, nil
 }
 
@@ -397,12 +398,13 @@ func (a *StakingAdapter) GetDelegation(delegator common.Address, validator commo
 	}
 
 	// 위임 확인
-	delegation, exists := validatorInfo.Delegations[delegator]
-	if !exists {
-		return nil, fmt.Errorf("delegation not found for delegator %s and validator %s", delegator.Hex(), validator.Hex())
+	for _, delegation := range validatorInfo.Delegations {
+		if delegation.Delegator == delegator {
+			return delegation, nil
+		}
 	}
 
-	return delegation, nil
+	return nil, fmt.Errorf("delegation not found for delegator %s and validator %s", delegator.Hex(), validator.Hex())
 }
 
 // GetDelegations는 위임자의 모든 위임 정보를 반환합니다.
