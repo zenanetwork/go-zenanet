@@ -399,6 +399,7 @@ type ChainConfig struct {
 	// Various consensus engines
 	Ethash             *EthashConfig       `json:"ethash,omitempty"`
 	Clique             *CliqueConfig       `json:"clique,omitempty"`
+	Eirene             *EireneConfig       `json:"eirene,omitempty"`
 	BlobScheduleConfig *BlobScheduleConfig `json:"blobSchedule,omitempty"`
 }
 
@@ -419,6 +420,22 @@ type CliqueConfig struct {
 // String implements the stringer interface, returning the consensus engine details.
 func (c CliqueConfig) String() string {
 	return fmt.Sprintf("clique(period: %d, epoch: %d)", c.Period, c.Epoch)
+}
+
+// EireneConfig는 Eirene 합의 엔진의 구성 매개변수입니다.
+type EireneConfig struct {
+	Period uint64 `json:"period"` // 블록 간 시간(초)
+	Epoch  uint64 `json:"epoch"`  // 투표 및 체크포인트를 재설정하는 에포크 길이
+
+	// 슬래싱 관련 설정
+	SlashingThreshold  uint64 `json:"slashingThreshold"`  // 검증자 제거를 고려하는 슬래싱 포인트 임계값
+	SlashingRate       uint64 `json:"slashingRate"`       // 슬래싱 시 스테이킹 감소 비율 (1/1000 단위)
+	MissedBlockPenalty uint64 `json:"missedBlockPenalty"` // 블록 생성 실패 시 부과되는 슬래싱 포인트
+}
+
+// String은 EireneConfig의 문자열 표현을 반환합니다.
+func (c *EireneConfig) String() string {
+	return fmt.Sprintf("{Period: %d, Epoch: %d}", c.Period, c.Epoch)
 }
 
 // Description returns a human-readable description of ChainConfig.
@@ -1049,4 +1066,9 @@ func (c *ChainConfig) Rules(num *big.Int, isMerge bool, timestamp uint64) Rules 
 		IsVerkle:         isVerkle,
 		IsEIP4762:        isVerkle,
 	}
+}
+
+// IsEirene는 주어진 블록 번호에서 Eirene 합의 엔진이 활성화되어 있는지 확인합니다.
+func (c *ChainConfig) IsEirene(num *big.Int) bool {
+	return c.Eirene != nil
 }
