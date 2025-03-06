@@ -137,10 +137,7 @@ var (
 	ErrUnauthorizedValidator = errors.New("unauthorized validator")
 )
 
-// Eirene는 Proof-of-Stake 합의 엔진을 구현합니다.
-// 이 구조체는 블록 생성, 검증, 검증자 관리, 거버넌스, 슬래싱, 보상 분배 등의
-// 기능을 제공합니다. Eirene는 Cosmos SDK와 Tendermint의 합의 메커니즘을 기반으로 하며,
-// go-zenanet의 합의 엔진 인터페이스를 구현합니다.
+// Eirene는 Proof-of-Stake 합의 알고리즘의 구현체입니다.
 type Eirene struct {
 	config *params.EireneConfig // 합의 엔진 설정
 	db     ethdb.Database       // 스냅샷 및 검증자 정보를 저장하는 데이터베이스
@@ -154,48 +151,31 @@ type Eirene struct {
 	signFn SignerFn       // 서명 함수
 	lock   sync.RWMutex   // 뮤텍스
 
-	// 거버넌스 상태
-	governance utils.GovernanceInterface
+	// 어댑터 인터페이스
+	coreAdapter    CoreAdapterInterface        // 코어 어댑터
+	govAdapter     utils.GovernanceInterface   // 거버넌스 어댑터
+	stakingAdapter utils.ValidatorSetInterface // 스테이킹 어댑터
+	abciAdapter    interface{}                 // ABCI 어댑터
 
-	// 검증자 관리
-	validatorSet utils.ValidatorSetInterface
+	// 블록체인 컨텍스트
+	chain        consensus.ChainHeaderReader               // 체인 헤더 리더
+	currentBlock func() *types.Block                       // 현재 블록을 가져오는 함수
+	stateAt      func(common.Hash) (*state.StateDB, error) // 특정 해시에서 상태를 가져오는 함수
 
-	// 슬래싱 상태
-	slashingState *SlashingState
+	// 이벤트 관련
+	eventMux     *event.TypeMux // 이벤트 멀티플렉서
+	eventFeed    *event.Feed    // 이벤트 피드
+	chainHeadCh  chan core.ChainHeadEvent
+	chainHeadSub event.Subscription
 
-	// 보상 상태
-	rewardState *RewardState
+	// 성능 최적화
+	performanceOptimizer *PerformanceOptimizer // 성능 최적화 모듈
 
-	// IBC 상태
-	ibcState *IBCState
+	// 로거
+	logger log.Logger
 
 	// 테스트용 필드
 	fakeDiff bool // 난이도 검증 건너뛰기
-
-	// 코어 어댑터
-	coreAdapter CoreAdapterInterface
-
-	// 거버넌스 어댑터
-	govAdapter utils.GovernanceInterface
-
-	// 스테이킹 어댑터
-	stakingAdapter utils.ValidatorSetInterface
-
-	// ABCI 어댑터
-	abciAdapter interface{}
-
-	// 블록 생성 및 검증
-	currentBlock func() *types.Block      // 현재 블록을 가져오는 함수
-	stateAt      func(common.Hash) (*state.StateDB, error) // 특정 해시에서 상태를 가져오는 함수
-
-	// 이벤트 피드
-	eventMux      *event.TypeMux // 이벤트 멀티플렉서
-	eventFeed     *event.Feed    // 이벤트 피드
-	chainHeadCh   chan core.ChainHeadEvent
-	chainHeadSub  event.Subscription
-	
-	// 로거
-	logger log.Logger
 }
 
 // SignerFn은 주어진 해시에 서명하고 결과를 반환하는 함수 유형입니다.
@@ -226,13 +206,22 @@ type SignerFn func(signer common.Address, hash []byte) ([]byte, error)
 func New(config *params.EireneConfig, db ethdb.Database) *Eirene {
 	// 시그니처 캐시 생성
 	signatures, _ := lru.NewARC(inmemorySignatures)
-	
+
 	// 로거 설정
 	logger := log.New("module", "eirene")
-	
+
+	// 설정 복사 및 기본값 설정
+	configCopy := *config
+	if configCopy.Period == 0 {
+		configCopy.Period = 15 // 기본 Period 값
+	}
+	if configCopy.Epoch == 0 {
+		configCopy.Epoch = 30000 // 기본 Epoch 값
+	}
+
 	// Eirene 인스턴스 생성
 	eirene := &Eirene{
-		config:     config,
+		config:     &configCopy,
 		db:         db,
 		recents:    newRecentBlocks(),
 		signatures: signatures,
@@ -240,7 +229,7 @@ func New(config *params.EireneConfig, db ethdb.Database) *Eirene {
 		eventFeed:  new(event.Feed),
 		logger:     logger,
 	}
-	
+
 	return eirene
 }
 
@@ -411,116 +400,67 @@ func (e *Eirene) Prepare(chain consensus.ChainHeaderReader, header *types.Header
 	return nil
 }
 
-// Finalize는 합의 엔진에 의해 모든 상태 전환이 실행된 후 블록 헤더를 준비합니다.
-//
-// 매개변수:
-//   - chain: 체인 헤더 리더 인터페이스
-//   - header: 마무리할 블록 헤더
-//   - state: 상태 데이터베이스
-//   - txs: 트랜잭션 목록
-//   - uncles: 엉클 헤더 목록
-//
-// 이 함수는 블록 생성의 마지막 단계에서 호출됩니다. 블록 보상을 분배하고 필요한 상태 변경을
-// 적용합니다. Eirene에서는 엉클이 없으므로 uncles 매개변수는 사용되지 않습니다.
-// 보상 분배 과정에서 오류가 발생하면 로그에 기록하지만, 블록 생성 과정은 계속 진행됩니다.
+// Finalize는 블록 마무리 작업을 수행합니다.
 func (e *Eirene) Finalize(chain consensus.ChainHeaderReader, header *types.Header, state vm.StateDB, txs []*types.Transaction, uncles []*types.Header) {
-	// 보상 분배
-	if err := e.distributeBlockReward(header, e.rewardState); err != nil {
-		log.Error("블록 보상 분배 실패", "err", err)
-		// 보상 분배 실패는 치명적이지 않으므로 계속 진행
+	// 블록 보상 분배
+	if e.coreAdapter != nil {
+		// 실제 구현에서는 적절한 방식으로 처리해야 함
+		e.logger.Info("Finalizing block with core adapter", "number", header.Number)
+		return
 	}
+
+	// 코어 어댑터가 없는 경우 기본 동작 수행
+	// 이 부분은 레거시 코드로, 코어 어댑터가 구현되면 제거될 예정입니다.
+
+	// 참고: 실제 구현에서는 vm.StateDB 인터페이스를 통해 상태 루트를 설정해야 합니다.
+	// 여기서는 임시로 빈 해시를 설정합니다.
+	header.Root = common.Hash{}
+	header.UncleHash = types.CalcUncleHash(nil)
 }
 
-// FinalizeAndAssemble는 상태 수정을 실행하고 최종 블록을 반환합니다.
-//
-// 매개변수:
-//   - chain: 체인 헤더 리더 인터페이스
-//   - header: 마무리할 블록 헤더
-//   - state: 상태 데이터베이스
-//   - body: 블록 바디
-//   - receipts: 영수증 목록
-//
-// 반환값:
-//   - *types.Block: 생성된 블록
-//   - error: 오류 발생 시 반환
-//
-// 이 함수는 Finalize와 유사하지만, 상태 변경을 적용한 후 최종 블록을 생성하여 반환합니다.
-// 헤더의 루트를 상태의 루트로 설정하고, 에포크 전환 블록인 경우 추가 작업을 수행합니다.
-// 블록 보상 분배, 서명 정보 업데이트, 슬래싱 처리, IBC 패킷 처리, 거버넌스 제안 처리 등의
-// 작업을 수행합니다. 각 작업에서 오류가 발생하면 로그에 기록하지만, 블록 생성 과정은 계속 진행됩니다.
+// FinalizeAndAssemble은 블록을 마무리하고 최종 블록을 조립합니다.
 func (e *Eirene) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, body *types.Body, receipts []*types.Receipt) (*types.Block, error) {
-	// 헤더의 루트를 상태의 루트로 설정
-	header.Root = state.IntermediateRoot(true)
-
-	// 현재 블록 번호
-	currentBlock := header.Number.Uint64()
-
-	// 에포크 전환 블록인지 확인
-	if currentBlock%e.config.Epoch == 0 {
-		// 에포크 전환 블록에서는 스냅샷을 저장하고 검증자 집합을 업데이트합니다.
-		// 검증자 집합 업데이트
-		// e.validatorSet.processEpochTransition(currentBlock)
-
-		// 검증자 집합 저장
-		// if err := e.validatorSet.store(e.db); err != nil {
-		// 	log.Error("검증자 집합 저장 실패", "err", err)
-		// }
+	// 코어 어댑터가 있으면 위임
+	if e.coreAdapter != nil {
+		return e.coreAdapter.FinalizeAndAssemble(chain, header, state, body.Transactions, body.Uncles, receipts)
 	}
 
-	// 블록 서명자 목록 가져오기
-	signers := make([]common.Address, 0)
-	if snap, err := e.snapshot(chain, currentBlock-1, header.ParentHash, nil); err == nil {
-		signers = snap.validators()
+	// 코어 어댑터가 없는 경우 기본 동작 수행
+	// 이 부분은 레거시 코드로, 코어 어댑터가 구현되면 제거될 예정입니다.
+
+	// 거버넌스 처리
+	if err := e.ProcessGovernance(state, header); err != nil {
+		return nil, err
 	}
 
-	// 보상 분배
-	if err := e.distributeBlockReward(header, e.rewardState); err != nil {
-		log.Error("블록 보상 분배 실패", "err", err)
-		// 보상 분배 실패는 치명적이지 않으므로 계속 진행
-	}
-
-	// 서명 정보 업데이트
-	if err := e.updateSigningInfo(e.slashingState, header, signers); err != nil {
-		log.Error("서명 정보 업데이트 실패", "err", err)
-		// 서명 정보 업데이트 실패는 치명적이지 않으므로 계속 진행
+	// 블록 보상 분배
+	rewardState := e.GetRewardState()
+	if err := e.distributeBlockReward(header, rewardState); err != nil {
+		return nil, err
 	}
 
 	// 슬래싱 처리
-	if err := e.processSlashing(e.validatorSet, e.slashingState, currentBlock); err != nil {
-		log.Error("슬래싱 처리 실패", "err", err)
-		// 슬래싱 처리 실패는 치명적이지 않으므로 계속 진행
-	}
-
-	// 보상 상태 저장
-	if err := e.rewardState.store(e.db); err != nil {
-		log.Error("보상 상태 저장 실패", "err", err)
+	slashingState := e.GetSlashingState()
+	if err := e.processSlashing(e.GetValidatorSet(), slashingState, header.Number.Uint64()); err != nil {
+		return nil, err
 	}
 
 	// IBC 패킷 처리
-	currentTime := header.Time
-	if err := e.processIBCPackets(currentBlock, uint64(currentTime)); err != nil {
-		log.Error("IBC 패킷 처리 실패", "err", err)
-		// IBC 패킷 처리 실패는 치명적이지 않으므로 계속 진행
+	if err := e.processIBCPackets(header.Number.Uint64(), header.Time); err != nil {
+		return nil, err
 	}
 
-	// 거버넌스 제안 처리
-	if err := e.ProcessProposals(currentBlock); err != nil {
-		log.Error("거버넌스 제안 처리 실패", "err", err)
-		// 거버넌스 제안 처리 실패는 치명적이지 않으므로 계속 진행
+	// 상태 루트 계산
+	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
+
+	// 블록 조립 (types.NewBlock 함수의 인자 형식에 맞게 수정)
+	// 블록 바디 생성
+	blockBody := &types.Body{
+		Transactions: body.Transactions,
+		Uncles:       body.Uncles,
 	}
 
-	// 거버넌스 상태를 데이터베이스에 저장
-	if err := e.saveGovernanceState(); err != nil {
-		log.Error("거버넌스 상태 저장 실패", "err", err)
-	}
-
-	// 검증자 집합 저장
-	// if err := e.validatorSet.store(e.db); err != nil {
-	// 	log.Error("검증자 집합 저장 실패", "err", err)
-	// }
-
-	// 새 블록 생성 및 반환
-	return types.NewBlock(header, nil, nil, nil), nil
+	return types.NewBlock(header, blockBody, receipts, nil), nil
 }
 
 // distributeRewards는 블록 생성 보상을 분배합니다.
@@ -734,181 +674,229 @@ func (e *Eirene) SubmitProposal(
 	funding *utils.FundingInfo,
 	deposit *big.Int,
 ) (uint64, error) {
-	e.lock.Lock()
-	defer e.lock.Unlock()
-
-	// 제안자가 검증자인지 확인
-	if !e.validatorSet.Contains(proposer) {
-		return 0, errors.New("proposer is not a validator")
+	// 코어 어댑터가 있으면 위임
+	if e.coreAdapter != nil {
+		return e.coreAdapter.SubmitProposal(proposer, title, description, proposalType, parameters, upgrade, funding, deposit)
 	}
 
-	// 현재 상태 가져오기
-	currentBlock := e.currentBlock()
-	if currentBlock == nil {
-		return 0, errors.New("current block is nil")
+	// 코어 어댑터가 없는 경우 거버넌스 어댑터 사용
+	if e.govAdapter != nil {
+		// 상태 DB 가져오기
+		header := e.chain.CurrentHeader()
+		if header == nil {
+			return 0, errors.New("current header not found")
+		}
+
+		stateDB, err := e.stateAt(header.Root)
+		if err != nil {
+			return 0, err
+		}
+
+		// 제안 내용 생성
+		var content utils.ProposalContentInterface
+		switch proposalType {
+		case utils.ProposalTypeParameterChange:
+			content = &parameterChangeProposal{
+				Changes: parameters,
+			}
+		case utils.ProposalTypeUpgrade:
+			if upgrade == nil {
+				return 0, errors.New("upgrade info is required for upgrade proposal")
+			}
+			content = &upgradeProposal{
+				Info: *upgrade,
+			}
+		case utils.ProposalTypeFunding:
+			if funding == nil {
+				return 0, errors.New("funding info is required for funding proposal")
+			}
+			content = &fundingProposal{
+				Info: *funding,
+			}
+		case utils.ProposalTypeText:
+			content = &textProposal{}
+		default:
+			return 0, errors.New("invalid proposal type")
+		}
+
+		return e.govAdapter.SubmitProposal(proposer, title, description, proposalType, content, deposit, stateDB)
 	}
 
-	// 상태 가져오기
-	state, err := e.stateAt(currentBlock.Hash())
-	if err != nil {
-		return 0, err
-	}
-
-	// 제안 내용 생성
-	var content utils.ProposalContentInterface
-	switch proposalType {
-	case utils.ProposalTypeParameter:
-		// 매개변수 변경 제안
-		content = &ParameterChangeProposal{
-			Parameters: parameters,
-		}
-	case utils.ProposalTypeUpgrade:
-		// 업그레이드 제안
-		if upgrade == nil {
-			return 0, errors.New("upgrade info is required for upgrade proposal")
-		}
-		content = &UpgradeProposal{
-			UpgradeInfo: *upgrade,
-		}
-	case utils.ProposalTypeFunding:
-		// 자금 지원 제안
-		if funding == nil {
-			return 0, errors.New("funding info is required for funding proposal")
-		}
-		// 자금이 충분한지 확인
-		balance := state.GetBalance(funding.Recipient)
-		if balance.ToBig().Cmp(funding.Amount) < 0 {
-			return 0, errors.New("insufficient funds")
-		}
-		content = &FundingProposal{
-			FundingInfo: *funding,
-		}
-	case utils.ProposalTypeText:
-		// 텍스트 제안
-		content = &TextProposal{}
-	default:
-		return 0, errors.New("invalid proposal type")
-	}
-
-	// 제안 제출
-	return e.governance.SubmitProposal(proposer, title, description, proposalType, content, deposit, state)
+	return 0, errors.New("governance adapter not set")
 }
 
-// Vote는 거버넌스 제안에 투표합니다.
+// Vote는 제안에 투표합니다.
 func (e *Eirene) Vote(
 	proposalID uint64,
 	voter common.Address,
 	option string,
 ) error {
-	e.lock.Lock()
-	defer e.lock.Unlock()
-
-	// 투표자가 검증자인지 확인
-	if !e.validatorSet.Contains(voter) {
-		return errors.New("voter is not a validator")
+	// 코어 어댑터가 있으면 위임
+	if e.coreAdapter != nil {
+		return e.coreAdapter.Vote(proposalID, voter, option)
 	}
 
-	return e.governance.Vote(proposalID, voter, option)
+	// 코어 어댑터가 없는 경우 거버넌스 어댑터 사용
+	if e.govAdapter != nil {
+		// 상태 DB 가져오기
+		header := e.chain.CurrentHeader()
+		if header == nil {
+			return errors.New("current header not found")
+		}
+
+		stateDB, err := e.stateAt(header.Root)
+		if err != nil {
+			return err
+		}
+
+		return e.govAdapter.Vote(proposalID, voter, option, stateDB)
+	}
+
+	return errors.New("governance adapter not set")
 }
 
 // ProcessProposals는 현재 블록에서 제안을 처리합니다.
 func (e *Eirene) ProcessProposals(currentBlock uint64) error {
-	e.lock.Lock()
-	defer e.lock.Unlock()
-
-	// 현재 상태 가져오기
-	current := e.currentBlock()
-	if current == nil {
-		return errors.New("current block is nil")
+	// 코어 어댑터가 있으면 위임
+	if e.coreAdapter != nil {
+		return e.coreAdapter.ProcessProposals(currentBlock)
 	}
 
-	// 상태 가져오기
-	state, err := e.stateAt(current.Hash())
-	if err != nil {
-		return err
-	}
+	// 코어 어댑터가 없는 경우 거버넌스 어댑터 사용
+	if e.govAdapter != nil {
+		// 현재 블록 헤더 가져오기
+		header := e.chain.CurrentHeader()
+		if header == nil {
+			return errors.New("current header not found")
+		}
 
-	// 모든 제안 가져오기
-	proposals := e.governance.GetProposals()
-	
-	// 각 제안 처리
-	for _, proposal := range proposals {
-		// 투표 기간이 끝난 제안만 처리
-		if proposal.GetVotingEndBlock() <= currentBlock && proposal.GetStatus() == utils.ProposalStatusVotingPeriod {
-			// 제안 실행
-			err := e.governance.ExecuteProposal(proposal.GetID(), state)
-			if err != nil {
-				log.Error("Failed to execute proposal", "id", proposal.GetID(), "error", err)
+		// 상태 DB 가져오기
+		stateDB, err := e.stateAt(header.Root)
+		if err != nil {
+			return err
+		}
+
+		// 모든 제안 가져오기
+		proposals := e.govAdapter.GetProposals()
+
+		// 각 제안 처리
+		for _, proposal := range proposals {
+			// 투표 기간이 끝난 제안 처리
+			if proposal.GetStatus() == utils.ProposalStatusVotingPeriod && currentBlock > proposal.GetVotingEndBlock() {
+				// 제안 실행
+				err := e.govAdapter.ExecuteProposal(proposal.GetID(), stateDB)
+				if err != nil {
+					e.logger.Error("Failed to execute proposal", "id", proposal.GetID(), "error", err)
+					// 개별 제안 처리 실패는 전체 프로세스를 중단하지 않음
+				}
 			}
 		}
 	}
-	
+
 	return nil
 }
 
-// ExecuteProposal은 통과된 제안을 실행합니다.
+// ExecuteProposal은 제안을 실행합니다.
 func (e *Eirene) ExecuteProposal(proposalID uint64) error {
-	e.lock.Lock()
-	defer e.lock.Unlock()
-
-	// 현재 상태 가져오기
-	current := e.currentBlock()
-	if current == nil {
-		return errors.New("current block is nil")
+	// 코어 어댑터가 있으면 위임
+	if e.coreAdapter != nil {
+		return e.coreAdapter.ExecuteProposal(proposalID)
 	}
 
-	// 상태 가져오기
-	state, err := e.stateAt(current.Hash())
-	if err != nil {
-		return err
+	// 코어 어댑터가 없는 경우 거버넌스 어댑터 사용
+	if e.govAdapter != nil {
+		// 현재 블록 헤더 가져오기
+		header := e.chain.CurrentHeader()
+		if header == nil {
+			return errors.New("current header not found")
+		}
+
+		// 상태 DB 가져오기
+		state, err := e.stateAt(header.Root)
+		if err != nil {
+			return err
+		}
+
+		// 제안 존재 여부 확인
+		_, err = e.govAdapter.GetProposal(proposalID)
+		if err != nil {
+			return err
+		}
+
+		// 제안 실행
+		return e.govAdapter.ExecuteProposal(proposalID, state)
 	}
 
-	// 제안 존재 여부 확인
-	_, err = e.governance.GetProposal(proposalID)
-	if err != nil {
-		return err
-	}
-
-	// 제안 실행
-	return e.governance.ExecuteProposal(proposalID, state)
+	return errors.New("governance adapter not set")
 }
 
 // GetProposal은 특정 제안을 반환합니다.
 func (e *Eirene) GetProposal(proposalID uint64) (utils.ProposalInterface, error) {
-	e.lock.RLock()
-	defer e.lock.RUnlock()
-
-	return e.governance.GetProposal(proposalID)
-}
-
-// GetProposals는 모든 제안 목록을 반환합니다.
-func (e *Eirene) GetProposals() []utils.ProposalInterface {
-	e.lock.RLock()
-	defer e.lock.RUnlock()
-
-	return e.governance.GetProposals()
-}
-
-// GetVotes는 제안에 대한 투표 목록을 반환합니다.
-func (e *Eirene) GetVotes(proposalID uint64) ([]ProposalVote, error) {
-	e.lock.RLock()
-	defer e.lock.RUnlock()
-
-	// 제안 가져오기
-	_, err := e.governance.GetProposal(proposalID)
-	if err != nil {
-		return nil, err
+	// 코어 어댑터가 있으면 위임
+	if e.coreAdapter != nil {
+		return e.coreAdapter.GetProposal(proposalID)
 	}
-	
-	// 투표 정보 반환 로직 구현 필요
-	// 현재는 빈 배열 반환
+
+	// 코어 어댑터가 없는 경우 거버넌스 어댑터 사용
+	if e.govAdapter != nil {
+		return e.govAdapter.GetProposal(proposalID)
+	}
+
+	return nil, errors.New("governance adapter not set")
+}
+
+// GetProposals는 모든 제안을 반환합니다.
+func (e *Eirene) GetProposals() []utils.ProposalInterface {
+	// 코어 어댑터가 있으면 위임
+	if e.coreAdapter != nil {
+		return e.coreAdapter.GetProposals()
+	}
+
+	// 코어 어댑터가 없는 경우 거버넌스 어댑터 사용
+	if e.govAdapter != nil {
+		return e.govAdapter.GetProposals()
+	}
+
+	return []utils.ProposalInterface{}
+}
+
+// GetVotes는 지정된 제안의 투표를 반환합니다.
+func (e *Eirene) GetVotes(proposalID uint64) ([]ProposalVote, error) {
+	// 코어 어댑터가 있으면 위임
+	if e.coreAdapter != nil {
+		return e.coreAdapter.GetVotes(proposalID)
+	}
+
+	// 코어 어댑터가 없는 경우 빈 배열 반환
 	return []ProposalVote{}, nil
 }
 
-// ProcessGovernance processes governance proposals
+// ProcessGovernance는 거버넌스 관련 처리를 수행합니다.
 func (e *Eirene) ProcessGovernance(state vm.StateDB, header *types.Header) error {
-	// 참고: 실제 구현에서는 적절한 타입 변환과 함수 호출을 수행해야 합니다.
-	// 여기서는 임시로 nil을 반환합니다.
+	// 코어 어댑터가 있으면 위임
+	if e.coreAdapter != nil {
+		return e.coreAdapter.ProcessProposals(header.Number.Uint64())
+	}
+
+	// 코어 어댑터가 없는 경우 거버넌스 어댑터 사용
+	if e.govAdapter != nil {
+		// 현재 블록 번호에서 제안 처리
+		currentBlock := header.Number.Uint64()
+
+		// 모든 제안 가져오기
+		proposals := e.govAdapter.GetProposals()
+
+		// 각 제안 처리
+		for _, proposal := range proposals {
+			// 투표 기간이 끝난 제안 처리
+			if proposal.GetStatus() == utils.ProposalStatusVotingPeriod && currentBlock > proposal.GetVotingEndBlock() {
+				// 제안 실행 (vm.StateDB 인터페이스를 사용)
+				// 실제 구현에서는 적절한 방식으로 처리해야 함
+				e.logger.Info("Processing proposal", "id", proposal.GetID(), "status", proposal.GetStatus())
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -976,7 +964,7 @@ func (e *Eirene) distributeBlockReward(header *types.Header, rewardState *Reward
 	}
 
 	blockNumber := header.Number.Uint64()
-	
+
 	// 블록 생성자 주소 가져오기
 	signer, err := ecrecover(header, e.signatures)
 	if err != nil {
@@ -998,19 +986,14 @@ func (e *Eirene) distributeBlockReward(header *types.Header, rewardState *Reward
 
 // processIBCPackets는 IBC 패킷을 처리합니다.
 func (e *Eirene) processIBCPackets(blockNumber uint64, timestamp uint64) error {
-	if e.ibcState == nil {
+	// IBC 상태 가져오기
+	ibcState := e.GetIBCState()
+	if ibcState == nil {
 		return utils.FormatError(utils.ErrInternalError, "IBC state is nil")
 	}
 
-	log.Debug("Processing IBC packets", "blockNumber", blockNumber, "timestamp", timestamp)
-
-	// IBC 패킷 처리 로직 구현
-	// 1. 수신된 패킷 처리
-	// 2. 타임아웃된 패킷 처리
-	// 3. 패킷 상태 업데이트
-
-	// 실제 구현에서는 IBC 패킷을 처리하는 로직을 구현해야 함
-	// 여기서는 간단한 로깅만 수행
+	// 실제 구현에서는 IBC 패킷 처리 로직 구현
+	e.logger.Debug("Processing IBC packets", "block", blockNumber, "time", timestamp)
 
 	return nil
 }
@@ -1078,27 +1061,39 @@ func (e *Eirene) GetDB() ethdb.Database {
 
 // GetValidatorSet은 Eirene 합의 엔진의 검증자 집합을 반환합니다.
 func (e *Eirene) GetValidatorSet() utils.ValidatorSetInterface {
-	return e.validatorSet
+	if e.stakingAdapter != nil {
+		return e.stakingAdapter
+	}
+	return nil
 }
 
 // GetGovernanceState는 Eirene 합의 엔진의 거버넌스 상태를 반환합니다.
 func (e *Eirene) GetGovernanceState() utils.GovernanceInterface {
-	return e.governance
+	if e.govAdapter != nil {
+		return e.govAdapter
+	}
+	return nil
 }
 
 // GetSlashingState는 Eirene 합의 엔진의 슬래싱 상태를 반환합니다.
 func (e *Eirene) GetSlashingState() *SlashingState {
-	return e.slashingState
+	// 코어 어댑터에서 슬래싱 상태 가져오기
+	// 실제 구현에서는 코어 어댑터에서 슬래싱 상태를 가져와야 함
+	return &SlashingState{}
 }
 
 // GetIBCState는 Eirene 합의 엔진의 IBC 상태를 반환합니다.
 func (e *Eirene) GetIBCState() *IBCState {
-	return e.ibcState
+	// 코어 어댑터에서 IBC 상태 가져오기
+	// 실제 구현에서는 코어 어댑터에서 IBC 상태를 가져와야 함
+	return &IBCState{}
 }
 
 // GetRewardState는 Eirene 합의 엔진의 보상 상태를 반환합니다.
 func (e *Eirene) GetRewardState() *RewardState {
-	return e.rewardState
+	// 코어 어댑터에서 보상 상태 가져오기
+	// 실제 구현에서는 코어 어댑터에서 보상 상태를 가져와야 함
+	return &RewardState{}
 }
 
 // GetSigner는 서명자 주소를 반환합니다.
@@ -1261,21 +1256,18 @@ func (e *Eirene) snapshot(chain consensus.ChainHeaderReader, number uint64, hash
 
 // SetChainContext는 체인 컨텍스트를 설정합니다.
 func (e *Eirene) SetChainContext(chain consensus.ChainHeaderReader, currentBlock func() *types.Block, stateAt func(common.Hash) (*state.StateDB, error)) {
+	e.chain = chain
 	e.currentBlock = currentBlock
 	e.stateAt = stateAt
-	
+
 	// 코어 어댑터 생성
 	e.coreAdapter = NewCoreAdapter(
 		e.db,
-		e.validatorSet,
-		e.governance,
+		e.stakingAdapter,
+		e.govAdapter,
 		e.config,
 		chain,
 		currentBlock,
 		stateAt,
 	)
-	
-	// 어댑터 설정
-	e.govAdapter = e.governance
-	e.stakingAdapter = e.validatorSet
 }

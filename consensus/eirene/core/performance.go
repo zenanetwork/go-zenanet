@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/zenanetwork/go-zenanet/common"
+	"github.com/zenanetwork/go-zenanet/consensus/eirene/utils"
 	"github.com/zenanetwork/go-zenanet/core/state"
 	"github.com/zenanetwork/go-zenanet/core/types"
 	"github.com/zenanetwork/go-zenanet/log"
@@ -32,57 +33,57 @@ import (
 // 성능 최적화 관련 상수
 const (
 	// 병렬 처리 관련
-	defaultWorkerCount = 4                // 기본 워커 수
-	minWorkerCount     = 2                // 최소 워커 수
-	maxWorkerCount     = 16               // 최대 워커 수
-	
+	defaultWorkerCount = 4  // 기본 워커 수
+	minWorkerCount     = 2  // 최소 워커 수
+	maxWorkerCount     = 16 // 최대 워커 수
+
 	// 캐싱 관련
-	defaultCacheSize   = 1024             // 기본 캐시 크기
-	minCacheSize       = 128              // 최소 캐시 크기
-	maxCacheSize       = 8192             // 최대 캐시 크기
-	
+	defaultCacheSize = 1024 // 기본 캐시 크기
+	minCacheSize     = 128  // 최소 캐시 크기
+	maxCacheSize     = 8192 // 최대 캐시 크기
+
 	// 성능 모니터링 관련
 	perfMonitorInterval = 5 * time.Minute // 성능 모니터링 간격
-	
+
 	// 배치 처리 관련
-	defaultBatchSize   = 100              // 기본 배치 크기
-	minBatchSize       = 10               // 최소 배치 크기
-	maxBatchSize       = 1000             // 최대 배치 크기
+	defaultBatchSize = 100  // 기본 배치 크기
+	minBatchSize     = 10   // 최소 배치 크기
+	maxBatchSize     = 1000 // 최대 배치 크기
 )
 
 // PerformanceOptimizer는 블록 처리 성능을 최적화합니다.
 type PerformanceOptimizer struct {
 	// 설정
-	workerCount int                      // 워커 수
-	cacheSize   int                      // 캐시 크기
-	batchSize   int                      // 배치 크기
-	
+	workerCount int // 워커 수
+	cacheSize   int // 캐시 크기
+	batchSize   int // 배치 크기
+
 	// 캐시
-	validatorCache *sync.Map              // 검증자 캐시 (주소 -> 검증자)
-	stateCache     *sync.Map              // 상태 캐시 (해시 -> 상태)
-	
+	validatorCache *sync.Map // 검증자 캐시 (주소 -> 검증자)
+	stateCache     *sync.Map // 상태 캐시 (해시 -> 상태)
+
 	// 성능 통계
-	txProcessingTimes []time.Duration     // 트랜잭션 처리 시간
-	blockProcessingTimes []time.Duration  // 블록 처리 시간
-	batchProcessingTimes []time.Duration  // 배치 처리 시간
-	
+	txProcessingTimes    []time.Duration // 트랜잭션 처리 시간
+	blockProcessingTimes []time.Duration // 블록 처리 시간
+	batchProcessingTimes []time.Duration // 배치 처리 시간
+
 	// 워커 풀
-	workerPool       chan struct{}        // 워커 풀
-	
+	workerPool chan struct{} // 워커 풀
+
 	// 종료 채널
-	quit             chan struct{}        // 종료 채널
-	wg               sync.WaitGroup       // 대기 그룹
-	
+	quit chan struct{}  // 종료 채널
+	wg   sync.WaitGroup // 대기 그룹
+
 	// 로거
-	logger           log.Logger           // 로거
-	
+	logger log.Logger // 로거
+
 	// 배치 처리 관련
 	stateBatchProcessor *StateBatchProcessor // 상태 DB 배치 처리기
-	
+
 	// 프로파일링 관련
-	profiler        *PerformanceProfiler  // 성능 프로파일러
-	lastProfilingTime time.Time           // 마지막 프로파일링 시간
-	highLoadDetected bool                 // 높은 부하 감지 여부
+	profiler          *PerformanceProfiler // 성능 프로파일러
+	lastProfilingTime time.Time            // 마지막 프로파일링 시간
+	highLoadDetected  bool                 // 높은 부하 감지 여부
 }
 
 // NewPerformanceOptimizer는 새로운 성능 최적화기를 생성합니다.
@@ -94,42 +95,47 @@ func NewPerformanceOptimizer() *PerformanceOptimizer {
 	} else if workerCount > maxWorkerCount {
 		workerCount = maxWorkerCount
 	}
-	
+
 	// 성능 프로파일러 생성
 	profiler := NewPerformanceProfiler()
-	
-	return &PerformanceOptimizer{
-		workerCount:         workerCount,
-		cacheSize:           defaultCacheSize,
-		batchSize:           defaultBatchSize,
-		validatorCache:      &sync.Map{},
-		stateCache:          &sync.Map{},
-		txProcessingTimes:   make([]time.Duration, 0, 100),
-		blockProcessingTimes: make([]time.Duration, 0, 100),
-		batchProcessingTimes: make([]time.Duration, 0, 100),
-		workerPool:          make(chan struct{}, workerCount),
-		quit:                make(chan struct{}),
-		logger:              log.New("module", "eirene/performance"),
-		stateBatchProcessor: NewStateBatchProcessor(defaultBatchSize),
-		profiler:            profiler,
-		lastProfilingTime:   time.Time{},
-		highLoadDetected:    false,
+
+	// 성능 최적화기 생성
+	po := &PerformanceOptimizer{
+		workerCount:          workerCount,
+		cacheSize:            defaultCacheSize,
+		batchSize:            defaultBatchSize,
+		validatorCache:       &sync.Map{},
+		stateCache:           &sync.Map{},
+		txProcessingTimes:    make([]time.Duration, 0),
+		blockProcessingTimes: make([]time.Duration, 0),
+		batchProcessingTimes: make([]time.Duration, 0),
+		workerPool:           make(chan struct{}, workerCount),
+		quit:                 make(chan struct{}),
+		logger:               log.New("module", "performance"),
+		profiler:             profiler,
+		lastProfilingTime:    time.Now(),
+		highLoadDetected:     false,
 	}
+
+	// 상태 배치 처리기 생성
+	po.stateBatchProcessor = NewStateBatchProcessor(po.batchSize)
+
+	return po
 }
 
 // Start는 성능 최적화기를 시작합니다.
 func (po *PerformanceOptimizer) Start() {
 	po.logger.Info("Starting performance optimizer", "workers", po.workerCount, "cache_size", po.cacheSize, "batch_size", po.batchSize)
-	
+
 	// 워커 풀 초기화
 	for i := 0; i < po.workerCount; i++ {
 		po.workerPool <- struct{}{}
 	}
-	
+
 	// 성능 모니터링 시작
 	po.wg.Add(1)
 	go po.monitorPerformance()
-	
+
 	// 성능 프로파일러 시작
 	if err := po.profiler.Start(); err != nil {
 		po.logger.Error("Failed to start performance profiler", "error", err)
@@ -139,10 +145,10 @@ func (po *PerformanceOptimizer) Start() {
 // Stop은 성능 최적화기를 중지합니다.
 func (po *PerformanceOptimizer) Stop() {
 	po.logger.Info("Stopping performance optimizer")
-	
+
 	// 성능 프로파일러 중지
 	po.profiler.Stop()
-	
+
 	close(po.quit)
 	po.wg.Wait()
 }
@@ -150,10 +156,10 @@ func (po *PerformanceOptimizer) Stop() {
 // monitorPerformance는 성능을 모니터링합니다.
 func (po *PerformanceOptimizer) monitorPerformance() {
 	defer po.wg.Done()
-	
+
 	ticker := time.NewTicker(perfMonitorInterval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ticker.C:
@@ -169,7 +175,7 @@ func (po *PerformanceOptimizer) analyzePerformance() {
 	// 메모리 사용량 분석
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
-	
+
 	// 트랜잭션 처리 시간 분석
 	var avgTxTime time.Duration
 	if len(po.txProcessingTimes) > 0 {
@@ -179,7 +185,7 @@ func (po *PerformanceOptimizer) analyzePerformance() {
 		}
 		avgTxTime = total / time.Duration(len(po.txProcessingTimes))
 	}
-	
+
 	// 블록 처리 시간 분석
 	var avgBlockTime time.Duration
 	if len(po.blockProcessingTimes) > 0 {
@@ -189,7 +195,7 @@ func (po *PerformanceOptimizer) analyzePerformance() {
 		}
 		avgBlockTime = total / time.Duration(len(po.blockProcessingTimes))
 	}
-	
+
 	// 배치 처리 시간 분석
 	var avgBatchTime time.Duration
 	if len(po.batchProcessingTimes) > 0 {
@@ -199,7 +205,7 @@ func (po *PerformanceOptimizer) analyzePerformance() {
 		}
 		avgBatchTime = total / time.Duration(len(po.batchProcessingTimes))
 	}
-	
+
 	// 워커 수 조정
 	if avgBlockTime > 500*time.Millisecond && po.workerCount < maxWorkerCount {
 		// 블록 처리가 느리면 워커 수 증가
@@ -208,7 +214,7 @@ func (po *PerformanceOptimizer) analyzePerformance() {
 		// 블록 처리가 빠르면 워커 수 감소
 		po.decreaseWorkers()
 	}
-	
+
 	// 캐시 크기 조정
 	cacheHitRate := po.calculateCacheHitRate()
 	if cacheHitRate < 0.5 && po.cacheSize < maxCacheSize {
@@ -218,7 +224,7 @@ func (po *PerformanceOptimizer) analyzePerformance() {
 		// 캐시 적중률이 높으면 캐시 크기 감소
 		po.decreaseCacheSize()
 	}
-	
+
 	// 배치 크기 조정
 	if avgBatchTime > 50*time.Millisecond && po.batchSize > minBatchSize {
 		// 배치 처리가 느리면 배치 크기 감소
@@ -227,7 +233,7 @@ func (po *PerformanceOptimizer) analyzePerformance() {
 		// 배치 처리가 빠르면 배치 크기 증가
 		po.increaseBatchSize()
 	}
-	
+
 	// 높은 부하 감지
 	highLoad := false
 	if avgBlockTime > 1*time.Second || memStats.Alloc > 1024*1024*1024 {
@@ -236,14 +242,14 @@ func (po *PerformanceOptimizer) analyzePerformance() {
 	} else {
 		po.highLoadDetected = false
 	}
-	
+
 	// 메모리 사용량이 높으면 GC 유도 및 캐시 정리
 	if memStats.Alloc > 1024*1024*1024 { // 1GB 이상 사용 중이면
 		po.logger.Info("High memory usage detected, triggering GC and cache cleanup")
 		runtime.GC()
 		po.cleanupCache()
 	}
-	
+
 	// 높은 부하가 감지되고 마지막 프로파일링으로부터 충분한 시간이 지났으면 수동 프로파일링 실행
 	if highLoad && time.Since(po.lastProfilingTime) > 10*time.Minute {
 		po.logger.Info("High load detected, triggering manual profiling")
@@ -253,7 +259,7 @@ func (po *PerformanceOptimizer) analyzePerformance() {
 			po.lastProfilingTime = time.Now()
 		}
 	}
-	
+
 	// 병목 지점 분석
 	bottlenecks := po.profiler.GetBottlenecks()
 	if len(bottlenecks) > 0 {
@@ -268,7 +274,7 @@ func (po *PerformanceOptimizer) analyzePerformance() {
 				"score", fmt.Sprintf("%.1f", b.Score))
 		}
 	}
-	
+
 	// 로그 출력
 	po.logger.Info("Performance analysis",
 		"mem_alloc", memStats.Alloc/1024/1024,
@@ -289,16 +295,16 @@ func (po *PerformanceOptimizer) analyzePerformance() {
 func (po *PerformanceOptimizer) calculateCacheHitRate() float64 {
 	validatorHitRate := validatorCacheStats.hitRate()
 	stateHitRate := stateCacheStats.hitRate()
-	
+
 	// 두 캐시의 평균 적중률 계산
 	avgHitRate := (validatorHitRate + stateHitRate) / 2.0
-	
+
 	// 통계 초기화 (주기적으로 초기화하여 최근 경향 반영)
-	if len(po.blockProcessingTimes) % 20 == 0 {
+	if len(po.blockProcessingTimes)%20 == 0 {
 		validatorCacheStats.resetStats()
 		stateCacheStats.resetStats()
 	}
-	
+
 	return avgHitRate
 }
 
@@ -307,10 +313,10 @@ func (po *PerformanceOptimizer) increaseWorkers() {
 	if po.workerCount >= maxWorkerCount {
 		return
 	}
-	
+
 	po.workerCount++
 	po.workerPool <- struct{}{}
-	
+
 	po.logger.Info("Increased worker count", "workers", po.workerCount)
 }
 
@@ -319,10 +325,10 @@ func (po *PerformanceOptimizer) decreaseWorkers() {
 	if po.workerCount <= minWorkerCount {
 		return
 	}
-	
+
 	po.workerCount--
 	<-po.workerPool
-	
+
 	po.logger.Info("Decreased worker count", "workers", po.workerCount)
 }
 
@@ -334,16 +340,16 @@ func (po *PerformanceOptimizer) SetWorkerCount(count int) {
 	} else if count > maxWorkerCount {
 		count = maxWorkerCount
 	}
-	
+
 	// 현재 워커 수와 같으면 변경 없음
 	if po.workerCount == count {
 		return
 	}
-	
+
 	// 워커 풀 재생성
 	oldCount := po.workerCount
 	po.workerCount = count
-	
+
 	// 워커 풀 크기 조정
 	if len(po.workerPool) > 0 {
 		// 기존 워커 풀 비우기
@@ -351,13 +357,13 @@ func (po *PerformanceOptimizer) SetWorkerCount(count int) {
 			<-po.workerPool
 		}
 	}
-	
+
 	// 새 워커 풀 생성
 	po.workerPool = make(chan struct{}, count)
 	for i := 0; i < count; i++ {
 		po.workerPool <- struct{}{}
 	}
-	
+
 	po.logger.Info("Worker count set", "old_count", oldCount, "new_count", count)
 }
 
@@ -366,12 +372,12 @@ func (po *PerformanceOptimizer) increaseCacheSize() {
 	if po.cacheSize >= maxCacheSize {
 		return
 	}
-	
+
 	po.cacheSize *= 2
 	if po.cacheSize > maxCacheSize {
 		po.cacheSize = maxCacheSize
 	}
-	
+
 	po.logger.Info("Increased cache size", "cache_size", po.cacheSize)
 }
 
@@ -380,12 +386,12 @@ func (po *PerformanceOptimizer) decreaseCacheSize() {
 	if po.cacheSize <= minCacheSize {
 		return
 	}
-	
+
 	po.cacheSize /= 2
 	if po.cacheSize < minCacheSize {
 		po.cacheSize = minCacheSize
 	}
-	
+
 	po.logger.Info("Decreased cache size", "cache_size", po.cacheSize)
 }
 
@@ -394,11 +400,11 @@ func (po *PerformanceOptimizer) increaseBatchSize() {
 	if po.batchSize >= maxBatchSize {
 		return
 	}
-	
+
 	oldBatchSize := po.batchSize
 	po.batchSize = min(po.batchSize*2, maxBatchSize)
 	po.stateBatchProcessor.SetBatchSize(po.batchSize)
-	
+
 	po.logger.Info("Increased batch size", "old_size", oldBatchSize, "new_size", po.batchSize)
 }
 
@@ -407,11 +413,11 @@ func (po *PerformanceOptimizer) decreaseBatchSize() {
 	if po.batchSize <= minBatchSize {
 		return
 	}
-	
+
 	oldBatchSize := po.batchSize
 	po.batchSize = max(po.batchSize/2, minBatchSize)
 	po.stateBatchProcessor.SetBatchSize(po.batchSize)
-	
+
 	po.logger.Info("Decreased batch size", "old_size", oldBatchSize, "new_size", po.batchSize)
 }
 
@@ -436,30 +442,40 @@ func (po *PerformanceOptimizer) ProcessTransactionsParallel(txs []*types.Transac
 	if len(txs) == 0 {
 		return nil
 	}
-	
+
+	if state == nil {
+		return utils.ErrInvalidParameter
+	}
+
 	// 트랜잭션 처리 시작 시간
 	startTime := time.Now()
-	
+
 	// 트랜잭션 의존성 그래프 구축
-	graph := po.buildTxDependencyGraph(txs)
-	
+	graph, err := po.buildTxDependencyGraph(txs)
+	if err != nil {
+		return utils.WrapError(err, "failed to build transaction dependency graph")
+	}
+
 	// 결과 채널
 	results := make(chan error, len(txs))
-	
+
 	// 처리 완료된 트랜잭션 수
 	processedCount := 0
-	
+
 	// 상태 DB 배치 처리기 초기화
-	po.stateBatchProcessor.Reset(state)
-	
+	if err := po.stateBatchProcessor.Reset(state); err != nil {
+		return utils.WrapError(err, "failed to reset state batch processor")
+	}
+
 	// 모든 트랜잭션이 처리될 때까지 반복
 	for processedCount < len(txs) {
 		// 독립적인 트랜잭션 가져오기
 		independentTxs := graph.getIndependentTransactions()
-		
+
 		if len(independentTxs) == 0 && processedCount < len(txs) {
 			// 의존성 사이클이 있는 경우 처리
 			po.logger.Warn("Dependency cycle detected in transactions, processing sequentially")
+
 			// 남은 트랜잭션을 순차적으로 처리
 			for _, node := range graph.nodes {
 				if !node.processed {
@@ -468,68 +484,87 @@ func (po *PerformanceOptimizer) ProcessTransactionsParallel(txs []*types.Transac
 					break
 				}
 			}
+
+			// 의존성 사이클 오류 기록
+			results <- utils.ErrTxDependencyCycle
 		}
-		
+
+		if len(independentTxs) == 0 {
+			break
+		}
+
 		// 독립적인 트랜잭션을 청크로 나누기
-		chunks := po.splitTransactions(independentTxs)
-		
+		chunks, err := po.splitTransactions(independentTxs)
+		if err != nil {
+			return utils.WrapError(err, "failed to split transactions")
+		}
+
 		// 각 청크를 병렬로 처리
 		for _, chunk := range chunks {
 			// 워커 풀에서 워커 가져오기
-			<-po.workerPool
-			
+			select {
+			case <-po.workerPool:
+				// 워커 획득 성공
+			case <-time.After(5 * time.Second):
+				// 타임아웃 - 워커 풀이 가득 찬 경우
+				return utils.ErrWorkerPoolFull
+			}
+
 			go func(txs []*types.Transaction) {
 				defer func() {
 					// 워커 반환
 					po.workerPool <- struct{}{}
+
+					// 패닉 복구
+					if r := recover(); r != nil {
+						po.logger.Error("Panic in transaction processing", "error", r)
+						results <- utils.FormatError(utils.ErrInternalError, "panic in transaction processing: %v", r)
+					}
 				}()
-				
+
 				// 트랜잭션 처리
 				for _, tx := range txs {
 					// 실제 구현에서는 트랜잭션 처리 로직 구현
 					// 여기서는 간단히 로그만 출력하고 배치 처리기에 추가
 					po.logger.Debug("Processing transaction", "hash", tx.Hash().Hex())
-					
+
 					// 트랜잭션을 배치 처리기에 추가
-					po.stateBatchProcessor.AddTransaction(tx)
-					
+					if err := po.stateBatchProcessor.AddTransaction(tx); err != nil {
+						results <- utils.WrapError(err, fmt.Sprintf("failed to add transaction %s to batch", tx.Hash().Hex()))
+						continue
+					}
+
 					// 트랜잭션 처리 완료 표시
 					graph.markProcessed(tx)
 					processedCount++
+					results <- nil
 				}
-				
-				// 결과 반환
-				results <- nil
 			}(chunk)
 		}
-		
-		// 청크 처리 결과 수집
-		for i := 0; i < len(chunks); i++ {
+
+		// 결과 수집
+		for i := 0; i < len(independentTxs); i++ {
 			if err := <-results; err != nil {
-				return err
+				// 오류 발생 시 로그 기록 후 계속 진행
+				po.logger.Error("Error processing transaction", "error", err)
 			}
 		}
-		
-		// 배치 처리 실행
-		if err := po.stateBatchProcessor.ProcessBatch(); err != nil {
-			return err
-		}
 	}
-	
-	// 남은 배치 처리
+
+	// 남은 트랜잭션 처리
 	if err := po.stateBatchProcessor.Flush(); err != nil {
-		return err
+		return utils.WrapError(err, "failed to flush batch processor")
 	}
-	
+
 	// 처리 시간 기록
 	processingTime := time.Since(startTime)
 	po.txProcessingTimes = append(po.txProcessingTimes, processingTime)
 	if len(po.txProcessingTimes) > 100 {
 		po.txProcessingTimes = po.txProcessingTimes[1:]
 	}
-	
-	po.logger.Debug("Processed transactions", "count", len(txs), "time", processingTime)
-	
+
+	po.logger.Info("Transactions processed", "count", len(txs), "time", processingTime)
+
 	return nil
 }
 
@@ -537,31 +572,39 @@ func (po *PerformanceOptimizer) ProcessTransactionsParallel(txs []*types.Transac
 func (po *PerformanceOptimizer) ProcessBlockParallel(block *types.Block, state *state.StateDB) error {
 	// 블록 처리 시작 시간
 	startTime := time.Now()
-	
+
 	// 트랜잭션 처리
 	err := po.ProcessTransactionsParallel(block.Transactions(), state)
-	
+
 	// 처리 시간 기록
 	processingTime := time.Since(startTime)
 	po.blockProcessingTimes = append(po.blockProcessingTimes, processingTime)
 	if len(po.blockProcessingTimes) > 100 {
 		po.blockProcessingTimes = po.blockProcessingTimes[1:]
 	}
-	
+
 	po.logger.Debug("Processed block", "number", block.NumberU64(), "hash", block.Hash().Hex(), "time", processingTime)
-	
+
 	return err
 }
 
-// splitTransactions는 트랜잭션을 청크로 나눕니다.
-func (po *PerformanceOptimizer) splitTransactions(txs []*types.Transaction) [][]*types.Transaction {
+// splitTransactions은 트랜잭션을 청크로 나눕니다.
+func (po *PerformanceOptimizer) splitTransactions(txs []*types.Transaction) ([][]*types.Transaction, error) {
+	if txs == nil {
+		return nil, utils.ErrInvalidParameter
+	}
+
+	if len(txs) == 0 {
+		return [][]*types.Transaction{}, nil
+	}
+
 	// 워커 수에 따라 청크 크기 결정
 	chunkSize := (len(txs) + po.workerCount - 1) / po.workerCount
 	if chunkSize < 1 {
 		chunkSize = 1
 	}
-	
-	// 청크 생성
+
+	// 트랜잭션을 청크로 나누기
 	var chunks [][]*types.Transaction
 	for i := 0; i < len(txs); i += chunkSize {
 		end := i + chunkSize
@@ -570,8 +613,8 @@ func (po *PerformanceOptimizer) splitTransactions(txs []*types.Transaction) [][]
 		}
 		chunks = append(chunks, txs[i:end])
 	}
-	
-	return chunks
+
+	return chunks, nil
 }
 
 // GetValidatorFromCache는 캐시에서 검증자를 가져옵니다.
@@ -638,7 +681,7 @@ func (g *txDependencyGraph) addTransaction(tx *types.Transaction) {
 	if _, exists := g.nodes[hash]; exists {
 		return
 	}
-	
+
 	g.nodes[hash] = &txNode{
 		tx:           tx,
 		dependencies: make([]*txNode, 0),
@@ -651,14 +694,14 @@ func (g *txDependencyGraph) addTransaction(tx *types.Transaction) {
 func (g *txDependencyGraph) addDependency(tx, dependency *types.Transaction) {
 	txHash := tx.Hash()
 	depHash := dependency.Hash()
-	
+
 	txNode, txExists := g.nodes[txHash]
 	depNode, depExists := g.nodes[depHash]
-	
+
 	if !txExists || !depExists {
 		return
 	}
-	
+
 	// 의존성 추가
 	txNode.dependencies = append(txNode.dependencies, depNode)
 	depNode.dependents = append(depNode.dependents, txNode)
@@ -667,14 +710,14 @@ func (g *txDependencyGraph) addDependency(tx, dependency *types.Transaction) {
 // getIndependentTransactions은 의존성이 없는 트랜잭션들을 반환합니다.
 func (g *txDependencyGraph) getIndependentTransactions() []*types.Transaction {
 	var result []*types.Transaction
-	
+
 	for _, node := range g.nodes {
 		if !node.processed && len(node.dependencies) == 0 {
 			result = append(result, node.tx)
 			node.processed = true
 		}
 	}
-	
+
 	return result
 }
 
@@ -685,9 +728,9 @@ func (g *txDependencyGraph) markProcessed(tx *types.Transaction) {
 	if !exists {
 		return
 	}
-	
+
 	node.processed = true
-	
+
 	// 이 트랜잭션에 의존하는 다른 트랜잭션들의 의존성 제거
 	for _, dependent := range node.dependents {
 		for i, dep := range dependent.dependencies {
@@ -701,33 +744,40 @@ func (g *txDependencyGraph) markProcessed(tx *types.Transaction) {
 }
 
 // buildTxDependencyGraph는 트랜잭션 의존성 그래프를 구축합니다.
-func (po *PerformanceOptimizer) buildTxDependencyGraph(txs []*types.Transaction) *txDependencyGraph {
+func (po *PerformanceOptimizer) buildTxDependencyGraph(txs []*types.Transaction) (*txDependencyGraph, error) {
+	if txs == nil {
+		return nil, utils.ErrInvalidParameter
+	}
+
 	graph := newTxDependencyGraph()
-	
+
 	// 모든 트랜잭션을 그래프에 추가
 	for _, tx := range txs {
+		if tx == nil {
+			return nil, utils.FormatError(utils.ErrInvalidParameter, "nil transaction in list")
+		}
 		graph.addTransaction(tx)
 	}
-	
+
 	// 의존성 분석 (같은 발신자의 트랜잭션은 논스 순서대로 처리되어야 함)
 	senderMap := make(map[common.Address][]*types.Transaction)
-	
+
 	for _, tx := range txs {
 		// 실제 구현에서는 트랜잭션에서 발신자 주소를 가져오는 로직 필요
 		// 여기서는 임의의 주소 사용
 		sender := common.Address{}
-		
+
 		senderMap[sender] = append(senderMap[sender], tx)
 	}
-	
+
 	// 같은 발신자의 트랜잭션 간 의존성 추가
 	for _, senderTxs := range senderMap {
 		for i := 1; i < len(senderTxs); i++ {
 			graph.addDependency(senderTxs[i], senderTxs[i-1])
 		}
 	}
-	
-	return graph
+
+	return graph, nil
 }
 
 // 캐시 통계 정보
@@ -761,12 +811,12 @@ func (cs *cacheStats) recordMiss() {
 func (cs *cacheStats) hitRate() float64 {
 	cs.mutex.Lock()
 	defer cs.mutex.Unlock()
-	
+
 	total := cs.hits + cs.misses
 	if total == 0 {
 		return 0.0
 	}
-	
+
 	return float64(cs.hits) / float64(total)
 }
 
@@ -774,7 +824,7 @@ func (cs *cacheStats) hitRate() float64 {
 func (cs *cacheStats) resetStats() {
 	cs.mutex.Lock()
 	defer cs.mutex.Unlock()
-	
+
 	cs.hits = 0
 	cs.misses = 0
 }
@@ -809,44 +859,61 @@ func NewStateBatchProcessor(batchSize int) *StateBatchProcessor {
 }
 
 // Reset은 배치 처리기를 초기화합니다.
-func (bp *StateBatchProcessor) Reset(stateDB *state.StateDB) {
+func (bp *StateBatchProcessor) Reset(stateDB *state.StateDB) error {
 	bp.mutex.Lock()
 	defer bp.mutex.Unlock()
-	
+
+	if stateDB == nil {
+		return utils.ErrInvalidParameter
+	}
+
 	bp.stateDB = stateDB
 	bp.pendingTxs = make([]*types.Transaction, 0, bp.batchSize)
+
+	return nil
 }
 
 // SetBatchSize는 배치 크기를 설정합니다.
-func (bp *StateBatchProcessor) SetBatchSize(batchSize int) {
+func (bp *StateBatchProcessor) SetBatchSize(batchSize int) error {
 	bp.mutex.Lock()
 	defer bp.mutex.Unlock()
-	
+
+	if batchSize < 1 {
+		return utils.FormatError(utils.ErrInvalidParameter, "batch size must be at least 1, got %d", batchSize)
+	}
+
 	bp.batchSize = batchSize
+	return nil
 }
 
 // AddTransaction은 트랜잭션을 배치에 추가합니다.
-func (bp *StateBatchProcessor) AddTransaction(tx *types.Transaction) {
+func (bp *StateBatchProcessor) AddTransaction(tx *types.Transaction) error {
 	bp.mutex.Lock()
 	defer bp.mutex.Unlock()
-	
+
+	if tx == nil {
+		return utils.ErrInvalidParameter
+	}
+
 	bp.pendingTxs = append(bp.pendingTxs, tx)
-	
+
 	// 배치가 가득 차면 처리
 	if len(bp.pendingTxs) >= bp.batchSize {
-		bp.processBatchInternal()
+		return bp.processBatchInternal()
 	}
+
+	return nil
 }
 
 // ProcessBatch는 현재 배치를 처리합니다.
 func (bp *StateBatchProcessor) ProcessBatch() error {
 	bp.mutex.Lock()
 	defer bp.mutex.Unlock()
-	
+
 	if len(bp.pendingTxs) > 0 {
 		return bp.processBatchInternal()
 	}
-	
+
 	return nil
 }
 
@@ -854,41 +921,45 @@ func (bp *StateBatchProcessor) ProcessBatch() error {
 func (bp *StateBatchProcessor) Flush() error {
 	bp.mutex.Lock()
 	defer bp.mutex.Unlock()
-	
+
 	if len(bp.pendingTxs) > 0 {
 		return bp.processBatchInternal()
 	}
-	
+
 	return nil
 }
 
 // processBatchInternal은 내부적으로 배치를 처리합니다.
 func (bp *StateBatchProcessor) processBatchInternal() error {
-	if bp.stateDB == nil || len(bp.pendingTxs) == 0 {
+	if bp.stateDB == nil {
+		return utils.ErrInternalError
+	}
+
+	if len(bp.pendingTxs) == 0 {
 		return nil
 	}
-	
+
 	startTime := time.Now()
-	
+
 	// 실제 구현에서는 트랜잭션을 일괄 처리하는 로직 구현
 	// 여기서는 간단히 로그만 출력
 	bp.logger.Debug("Processing batch", "count", len(bp.pendingTxs))
-	
+
 	// 배치 처리 로직 (실제 구현에서는 상태 DB에 일괄 적용)
 	// 예: bp.stateDB.ApplyBatch(bp.pendingTxs)
-	
+
 	// 배치 처리 시간 기록
 	processingTime := time.Since(startTime)
 	bp.processingTimes = append(bp.processingTimes, processingTime)
 	if len(bp.processingTimes) > 100 {
 		bp.processingTimes = bp.processingTimes[1:]
 	}
-	
+
 	// 처리된 트랜잭션 초기화
 	bp.pendingTxs = make([]*types.Transaction, 0, bp.batchSize)
-	
+
 	bp.logger.Debug("Batch processed", "time", processingTime)
-	
+
 	return nil
 }
 
@@ -896,15 +967,15 @@ func (bp *StateBatchProcessor) processBatchInternal() error {
 func (bp *StateBatchProcessor) GetAverageProcessingTime() time.Duration {
 	bp.mutex.Lock()
 	defer bp.mutex.Unlock()
-	
+
 	if len(bp.processingTimes) == 0 {
 		return 0
 	}
-	
+
 	var total time.Duration
 	for _, t := range bp.processingTimes {
 		total += t
 	}
-	
+
 	return total / time.Duration(len(bp.processingTimes))
-} 
+}

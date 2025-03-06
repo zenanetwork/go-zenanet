@@ -56,11 +56,11 @@ const (
 
 // 투표 옵션 상수
 const (
-	VoteOptionYes           = "yes"             // 찬성
-	VoteOptionNo            = "no"              // 반대
-	VoteOptionAbstain       = "abstain"         // 기권
-	VoteOptionVeto          = "veto"            // 거부권
-	VoteWithConditions      = "with_conditions" // 조건부 찬성
+	VoteOptionYes      = "yes"             // 찬성
+	VoteOptionNo       = "no"              // 반대
+	VoteOptionAbstain  = "abstain"         // 기권
+	VoteOptionVeto     = "veto"            // 거부권
+	VoteWithConditions = "with_conditions" // 조건부 찬성
 )
 
 // 투표 가중치 유형 상수
@@ -72,17 +72,17 @@ const (
 
 // 기본 거버넌스 매개변수 상수
 const (
-	DefaultMinDeposit           = 100 * 1e18 // 100 토큰
-	DefaultMinDepositEmergency  = 1000       // 긴급 제안 최소 보증금 (1000 토큰)
-	DefaultDepositPeriod        = 86400 * 2  // 2일 (초 단위)
-	DefaultVotingPeriod         = 86400 * 7  // 7일 (초 단위)
-	DefaultEmergencyVotingPeriod = 86400     // 1일 (초 단위)
-	DefaultQuorum               = 0.334      // 33.4%
-	DefaultEmergencyQuorum      = 50         // 50% 쿼럼
-	DefaultThreshold            = 0.5        // 50%
-	DefaultEmergencyThreshold   = 67         // 67% 찬성 임계값
-	DefaultVetoThreshold        = 0.334      // 33.4%
-	DefaultExecutionDelay       = 86400 * 2  // 2일 (초 단위)
+	DefaultMinDeposit            = 100 * 1e18 // 100 토큰
+	DefaultMinDepositEmergency   = 1000       // 긴급 제안 최소 보증금 (1000 토큰)
+	DefaultDepositPeriod         = 86400 * 2  // 2일 (초 단위)
+	DefaultVotingPeriod          = 86400 * 7  // 7일 (초 단위)
+	DefaultEmergencyVotingPeriod = 86400      // 1일 (초 단위)
+	DefaultQuorum                = 0.334      // 33.4%
+	DefaultEmergencyQuorum       = 50         // 50% 쿼럼
+	DefaultThreshold             = 0.5        // 50%
+	DefaultEmergencyThreshold    = 67         // 67% 찬성 임계값
+	DefaultVetoThreshold         = 0.334      // 33.4%
+	DefaultExecutionDelay        = 86400 * 2  // 2일 (초 단위)
 )
 
 // ValidatorInterface는 검증자 관련 기능을 제공하는 인터페이스입니다.
@@ -122,28 +122,28 @@ type ProposalInterface interface {
 // StandardProposal은 표준 제안 구조체입니다.
 // 이 구조체는 모든 유형의 제안에 공통적으로 사용되는 필드를 포함합니다.
 type StandardProposal struct {
-	ID               uint64                 // 제안 ID
-	Type             string                 // 제안 유형
-	Title            string                 // 제안 제목
-	Description      string                 // 제안 설명
-	Proposer         common.Address         // 제안자 주소
-	SubmitTime       time.Time              // 제출 시간
-	SubmitBlock      uint64                 // 제출 블록
-	DepositEnd       time.Time              // 보증금 기간 종료 시간
-	VotingStart      time.Time              // 투표 시작 시간
-	VotingEnd        time.Time              // 투표 종료 시간
-	ExecuteTime      time.Time              // 실행 시간
-	VotingStartBlock uint64                 // 투표 시작 블록
-	VotingEndBlock   uint64                 // 투표 종료 블록
-	Status           string                 // 제안 상태
-	TotalDeposit     *big.Int               // 총 보증금
+	ID               uint64                      // 제안 ID
+	Type             string                      // 제안 유형
+	Title            string                      // 제안 제목
+	Description      string                      // 제안 설명
+	Proposer         common.Address              // 제안자 주소
+	SubmitTime       time.Time                   // 제출 시간
+	SubmitBlock      uint64                      // 제출 블록
+	DepositEnd       time.Time                   // 보증금 기간 종료 시간
+	VotingStart      time.Time                   // 투표 시작 시간
+	VotingEnd        time.Time                   // 투표 종료 시간
+	ExecuteTime      time.Time                   // 실행 시간
+	VotingStartBlock uint64                      // 투표 시작 블록
+	VotingEndBlock   uint64                      // 투표 종료 블록
+	Status           string                      // 제안 상태
+	TotalDeposit     *big.Int                    // 총 보증금
 	Deposits         map[common.Address]*big.Int // 보증금 맵 (주소 -> 금액)
-	YesVotes         *big.Int               // 찬성 투표 수
-	NoVotes          *big.Int               // 반대 투표 수
-	AbstainVotes     *big.Int               // 기권 투표 수
-	VetoVotes        *big.Int               // 거부권 투표 수
-	Votes            map[common.Address]string // 투표 맵 (주소 -> 옵션)
-	Content          ProposalContentInterface `rlp:"-"` // 제안 내용 (직렬화 제외)
+	YesVotes         *big.Int                    // 찬성 투표 수
+	NoVotes          *big.Int                    // 반대 투표 수
+	AbstainVotes     *big.Int                    // 기권 투표 수
+	VetoVotes        *big.Int                    // 거부권 투표 수
+	Votes            map[common.Address]string   // 투표 맵 (주소 -> 옵션)
+	Content          ProposalContentInterface    `rlp:"-"` // 제안 내용 (직렬화 제외)
 }
 
 // GetID는 제안 ID를 반환합니다.
@@ -205,9 +205,10 @@ type ProposalContentInterface interface {
 }
 
 // GovernanceInterface는 거버넌스 관련 기능을 제공하는 인터페이스입니다.
+// 이 인터페이스를 통해 다른 패키지에서 거버넌스 기능에 접근할 수 있습니다.
 type GovernanceInterface interface {
 	SubmitProposal(proposer common.Address, title string, description string, proposalType string, content ProposalContentInterface, initialDeposit *big.Int, state *state.StateDB) (uint64, error)
-	Vote(proposalID uint64, voter common.Address, option string) error
+	Vote(proposalID uint64, voter common.Address, option string, state *state.StateDB) error
 	GetProposal(proposalID uint64) (ProposalInterface, error)
 	GetProposals() []ProposalInterface
 	ExecuteProposal(proposalID uint64, state *state.StateDB) error
@@ -215,14 +216,14 @@ type GovernanceInterface interface {
 
 // UpgradeInfo는 업그레이드 정보를 나타냅니다.
 type UpgradeInfo struct {
-	Name                string    // 업그레이드 이름
-	Height              uint64    // 업그레이드 높이
-	Info                string    // 업그레이드 정보
-	UpgradeTime         time.Time // 업그레이드 시간
-	CancelUpgradeHeight uint64    // 업그레이드 취소 높이
-	Version             string    // 버전
-	URL                 string    // 업그레이드 URL
-	Hash                []byte    // 업그레이드 해시
+	Name                string       // 업그레이드 이름
+	Height              uint64       // 업그레이드 높이
+	Info                string       // 업그레이드 정보
+	UpgradeTime         time.Time    // 업그레이드 시간
+	CancelUpgradeHeight uint64       // 업그레이드 취소 높이
+	Version             string       // 버전
+	URL                 string       // 업그레이드 URL
+	Hash                []byte       // 업그레이드 해시
 	UpgradeHandler      func() error `rlp:"-"` // 업그레이드 핸들러 (직렬화 제외)
 }
 
@@ -268,4 +269,4 @@ func (v *BasicValidator) GetStatus() uint8 {
 // IsActive는 검증자가 활성 상태인지 여부를 반환합니다.
 func (v *BasicValidator) IsActive() bool {
 	return v.Status == ValidatorStatusBonded
-} 
+}

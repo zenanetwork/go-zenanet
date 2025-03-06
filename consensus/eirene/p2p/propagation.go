@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/zenanetwork/go-zenanet/common"
+	"github.com/zenanetwork/go-zenanet/consensus/eirene/utils"
 	"github.com/zenanetwork/go-zenanet/core/types"
 	"github.com/zenanetwork/go-zenanet/log"
 )
@@ -31,58 +32,86 @@ import (
 const (
 	// 초기 전파 피어 수
 	initialPropagationPeers = 4
-	
+
 	// 최대 전파 피어 수
-	maxPropagationPeers = 8
-	
+	maxPropagationPeers = 16
+
 	// 전파 간격
 	propagationInterval = 100 * time.Millisecond
-	
+
 	// 전파 타임아웃
 	propagationTimeout = 10 * time.Second
-	
+
 	// 블록 전파 지연 (밀리초)
 	minPropagationDelay = 50
 	maxPropagationDelay = 200
-	
+
 	// 블록 해시 캐시 크기
 	blockHashCacheSize = 1024
-	
+
 	// 블록 전파 로그 간격
 	propagationLogInterval = 100
+
+	// 네트워크 혼잡도 측정 간격
+	congestionMeasureInterval = 5 * time.Second
+
+	// 네트워크 혼잡도 임계값
+	congestionThreshold = 0.8
+
+	// 적응형 전파 조정 간격
+	adaptiveAdjustmentInterval = 30 * time.Second
+
+	// 헤더 전파 비율 (전체 피어 중 헤더만 전파할 피어 비율)
+	headerOnlyPropagationRatio = 0.7
+)
+
+// 전파 모드
+const (
+	PropagationModeNormal       = 0 // 일반 전파 모드
+	PropagationModeAggressive   = 1 // 적극적 전파 모드 (중요 블록)
+	PropagationModeConservative = 2 // 보수적 전파 모드 (네트워크 혼잡 시)
 )
 
 // BlockPropagator는 블록 전파 알고리즘을 구현합니다.
 type BlockPropagator struct {
-	peerSet     *PeerSet           // 피어 집합
-	
+	peerSet      *PeerSet                    // 피어 집합
+	validatorSet utils.ValidatorSetInterface // 검증자 집합
+
 	// 블록 전파 상태 추적
 	propagatedBlocks map[common.Hash]*propagationState // 전파된 블록 맵
-	
+
 	// 블록 해시 캐시
 	blockHashCache *lruCache
-	
+
 	// 통계
-	totalPropagated  uint64         // 총 전파된 블록 수
-	totalPeers       uint64         // 총 전파된 피어 수
+	totalPropagated  uint64          // 총 전파된 블록 수
+	totalPeers       uint64          // 총 전파된 피어 수
 	propagationTimes []time.Duration // 전파 시간 통계
-	
-	quit       chan struct{}      // 종료 채널
-	wg         sync.WaitGroup     // 대기 그룹
-	
-	lock       sync.RWMutex       // 동시성 제어를 위한 락
-	
-	logger     log.Logger         // 로거
+
+	// 네트워크 상태
+	networkCongestion float64 // 네트워크 혼잡도 (0-1)
+	propagationMode   int     // 전파 모드
+	adaptivePeerCount int     // 적응형 피어 수
+
+	quit chan struct{}  // 종료 채널
+	wg   sync.WaitGroup // 대기 그룹
+
+	lock sync.RWMutex // 동시성 제어를 위한 락
+
+	logger log.Logger // 로거
 }
 
 // propagationState는 블록 전파 상태를 나타냅니다.
 type propagationState struct {
-	block      *types.Block       // 블록
-	td         *big.Int           // 총 난이도
-	peers      map[string]bool    // 전파된 피어 맵
-	startTime  time.Time          // 전파 시작 시간
-	endTime    time.Time          // 전파 완료 시간
-	completed  bool               // 전파 완료 여부
+	block           *types.Block    // 블록
+	header          *types.Header   // 블록 헤더
+	td              *big.Int        // 총 난이도
+	peers           map[string]bool // 전파된 피어 맵
+	headerOnlyPeers map[string]bool // 헤더만 전파된 피어 맵
+	startTime       time.Time       // 전파 시작 시간
+	endTime         time.Time       // 전파 완료 시간
+	completed       bool            // 전파 완료 여부
+	isUrgent        bool            // 긴급 전파 여부
 }
 
 // lruCache는 LRU 캐시를 구현합니다.
@@ -94,14 +123,17 @@ type lruCache struct {
 }
 
 // NewBlockPropagator는 새로운 블록 전파기를 생성합니다.
-func NewBlockPropagator(peerSet *PeerSet) *BlockPropagator {
+func NewBlockPropagator(peerSet *PeerSet, validatorSet utils.ValidatorSetInterface) *BlockPropagator {
 	return &BlockPropagator{
-		peerSet:          peerSet,
-		propagatedBlocks: make(map[common.Hash]*propagationState),
-		blockHashCache:   newLRUCache(blockHashCacheSize),
-		propagationTimes: make([]time.Duration, 0, 100),
-		quit:             make(chan struct{}),
-		logger:           log.New("module", "eirene/p2p/propagation"),
+		peerSet:           peerSet,
+		validatorSet:      validatorSet,
+		propagatedBlocks:  make(map[common.Hash]*propagationState),
+		blockHashCache:    newLRUCache(blockHashCacheSize),
+		propagationTimes:  make([]time.Duration, 0, 100),
+		quit:              make(chan struct{}),
+		logger:            log.New("module", "p2p/propagator"),
+		propagationMode:   PropagationModeNormal,
+		adaptivePeerCount: initialPropagationPeers,
 	}
 }
 
@@ -118,9 +150,9 @@ func newLRUCache(capacity int) *lruCache {
 func (c *lruCache) Add(key, value interface{}) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	
-	// 이미 있는 항목인 경우 순서 업데이트
-	if _, ok := c.items[key]; ok {
+
+	// 이미 존재하는 키인 경우 순서 업데이트
+	if _, exists := c.items[key]; exists {
 		// 기존 항목 제거
 		for i, k := range c.order {
 			if k == key {
@@ -128,13 +160,13 @@ func (c *lruCache) Add(key, value interface{}) {
 				break
 			}
 		}
-	} else if len(c.items) >= c.capacity {
+	} else if len(c.order) >= c.capacity {
 		// 캐시가 가득 찬 경우 가장 오래된 항목 제거
 		oldestKey := c.order[0]
 		delete(c.items, oldestKey)
 		c.order = c.order[1:]
 	}
-	
+
 	// 새 항목 추가
 	c.items[key] = value
 	c.order = append(c.order, key)
@@ -144,48 +176,48 @@ func (c *lruCache) Add(key, value interface{}) {
 func (c *lruCache) Get(key interface{}) (interface{}, bool) {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	
-	value, ok := c.items[key]
-	return value, ok
+
+	value, found := c.items[key]
+	return value, found
 }
 
 // Contains는 캐시에 항목이 있는지 확인합니다.
 func (c *lruCache) Contains(key interface{}) bool {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	
-	_, ok := c.items[key]
-	return ok
+
+	_, found := c.items[key]
+	return found
 }
 
 // Start는 블록 전파기를 시작합니다.
 func (bp *BlockPropagator) Start() {
-	bp.logger.Info("Starting block propagator")
-	
-	bp.wg.Add(1)
+	bp.wg.Add(2)
 	go bp.cleanupLoop()
+	go bp.networkMonitorLoop()
+	bp.logger.Info("Block propagator started")
 }
 
 // Stop은 블록 전파기를 중지합니다.
 func (bp *BlockPropagator) Stop() {
-	bp.logger.Info("Stopping block propagator")
 	close(bp.quit)
 	bp.wg.Wait()
+	bp.logger.Info("Block propagator stopped")
 }
 
-// cleanupLoop는 주기적으로 오래된 전파 상태를 정리합니다.
+// cleanupLoop는 오래된 전파 상태를 정리하는 루프입니다.
 func (bp *BlockPropagator) cleanupLoop() {
 	defer bp.wg.Done()
-	
-	ticker := time.NewTicker(time.Minute)
+
+	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
-		case <-ticker.C:
-			bp.cleanup()
 		case <-bp.quit:
 			return
+		case <-ticker.C:
+			bp.cleanup()
 		}
 	}
 }
@@ -194,318 +226,516 @@ func (bp *BlockPropagator) cleanupLoop() {
 func (bp *BlockPropagator) cleanup() {
 	bp.lock.Lock()
 	defer bp.lock.Unlock()
-	
+
 	now := time.Now()
-	
-	// 오래된 전파 상태 제거
 	for hash, state := range bp.propagatedBlocks {
-		// 완료된 전파 상태이고 일정 시간이 지난 경우 제거
+		// 완료된 전파 상태 중 1시간 이상 지난 것 제거
 		if state.completed && now.Sub(state.endTime) > time.Hour {
 			delete(bp.propagatedBlocks, hash)
 		}
-		
-		// 시작했지만 완료되지 않은 전파 상태가 타임아웃된 경우 제거
-		if !state.completed && now.Sub(state.startTime) > propagationTimeout {
+
+		// 미완료 전파 상태 중 1일 이상 지난 것 제거 (비정상 상태)
+		if !state.completed && now.Sub(state.startTime) > 24*time.Hour {
 			delete(bp.propagatedBlocks, hash)
 		}
 	}
 }
 
-// PropagateBlock은 블록을 전파합니다.
+// networkMonitorLoop는 네트워크 상태를 모니터링하는 루프입니다.
+func (bp *BlockPropagator) networkMonitorLoop() {
+	defer bp.wg.Done()
+
+	congestionTicker := time.NewTicker(congestionMeasureInterval)
+	adaptiveTicker := time.NewTicker(adaptiveAdjustmentInterval)
+
+	for {
+		select {
+		case <-bp.quit:
+			congestionTicker.Stop()
+			adaptiveTicker.Stop()
+			return
+		case <-congestionTicker.C:
+			bp.measureNetworkCongestion()
+		case <-adaptiveTicker.C:
+			bp.adjustPropagationStrategy()
+		}
+	}
+}
+
+// measureNetworkCongestion은 네트워크 혼잡도를 측정합니다.
+func (bp *BlockPropagator) measureNetworkCongestion() {
+	// 피어 응답 시간, 대기 중인 요청 수 등을 기반으로 혼잡도 계산
+	// 여기서는 간단한 구현으로 피어 수와 활성 전파 수만 사용
+
+	peers := bp.peerSet.AllPeers()
+	peerCount := len(peers)
+
+	bp.lock.RLock()
+	activePropagations := 0
+	for _, state := range bp.propagatedBlocks {
+		if !state.completed {
+			activePropagations++
+		}
+	}
+	bp.lock.RUnlock()
+
+	// 혼잡도 계산 (피어당 활성 전파 수 기준)
+	var congestion float64
+	if peerCount > 0 {
+		congestion = float64(activePropagations) / float64(peerCount)
+		if congestion > 1.0 {
+			congestion = 1.0
+		}
+	}
+
+	bp.lock.Lock()
+	bp.networkCongestion = congestion
+	bp.lock.Unlock()
+
+	bp.logger.Debug("Network congestion measured",
+		"congestion", congestion,
+		"active_propagations", activePropagations,
+		"peer_count", peerCount)
+
+	// 혼잡도에 따라 전파 모드 조정
+	if congestion > congestionThreshold {
+		bp.setPropagationMode(PropagationModeConservative)
+	} else {
+		bp.setPropagationMode(PropagationModeNormal)
+	}
+}
+
+// adjustPropagationStrategy는 전파 전략을 조정합니다.
+func (bp *BlockPropagator) adjustPropagationStrategy() {
+	bp.lock.Lock()
+	defer bp.lock.Unlock()
+
+	// 최근 전파 성능을 기반으로 피어 수 조정
+	var totalTime time.Duration
+	recentTimes := bp.propagationTimes
+	if len(recentTimes) > 20 {
+		recentTimes = recentTimes[len(recentTimes)-20:]
+	}
+
+	if len(recentTimes) == 0 {
+		return
+	}
+
+	for _, t := range recentTimes {
+		totalTime += t
+	}
+
+	avgTime := totalTime / time.Duration(len(recentTimes))
+
+	// 평균 전파 시간이 너무 길면 피어 수 증가
+	if avgTime > 500*time.Millisecond && bp.adaptivePeerCount < maxPropagationPeers {
+		bp.adaptivePeerCount++
+		bp.logger.Debug("Increased propagation peer count", "count", bp.adaptivePeerCount, "avg_time", avgTime)
+	}
+
+	// 평균 전파 시간이 충분히 짧으면 피어 수 감소
+	if avgTime < 100*time.Millisecond && bp.adaptivePeerCount > initialPropagationPeers {
+		bp.adaptivePeerCount--
+		bp.logger.Debug("Decreased propagation peer count", "count", bp.adaptivePeerCount, "avg_time", avgTime)
+	}
+}
+
+// setPropagationMode는 전파 모드를 설정합니다.
+func (bp *BlockPropagator) setPropagationMode(mode int) {
+	bp.lock.Lock()
+	defer bp.lock.Unlock()
+
+	if bp.propagationMode != mode {
+		bp.propagationMode = mode
+		bp.logger.Info("Propagation mode changed", "mode", mode)
+	}
+}
+
+// markPropagationCompleted는 블록 전파를 완료로 표시합니다.
+func (bp *BlockPropagator) markPropagationCompleted(hash common.Hash) {
+	bp.lock.Lock()
+	defer bp.lock.Unlock()
+
+	state, exists := bp.propagatedBlocks[hash]
+	if !exists {
+		return
+	}
+
+	if !state.completed {
+		state.completed = true
+		state.endTime = time.Now()
+
+		// 전파 시간 통계 업데이트
+		propagationTime := state.endTime.Sub(state.startTime)
+		bp.propagationTimes = append(bp.propagationTimes, propagationTime)
+		if len(bp.propagationTimes) > 100 {
+			bp.propagationTimes = bp.propagationTimes[1:]
+		}
+
+		bp.logger.Debug("Block propagation completed",
+			"hash", hash.Hex(),
+			"time", propagationTime,
+			"peers", len(state.peers),
+			"header_only_peers", len(state.headerOnlyPeers))
+	}
+}
+
+// PropagateBlock은 블록을 네트워크에 전파합니다.
 func (bp *BlockPropagator) PropagateBlock(block *types.Block, td *big.Int) {
 	hash := block.Hash()
-	
+
 	// 이미 전파 중인 블록인지 확인
 	bp.lock.Lock()
-	if _, ok := bp.propagatedBlocks[hash]; ok {
+	if _, exists := bp.propagatedBlocks[hash]; exists {
 		bp.lock.Unlock()
 		return
 	}
-	
-	// 이미 전파된 블록인지 확인
+
+	// 블록 해시 캐시에 있는지 확인
 	if bp.blockHashCache.Contains(hash) {
 		bp.lock.Unlock()
 		return
 	}
-	
+
 	// 블록 해시 캐시에 추가
 	bp.blockHashCache.Add(hash, struct{}{})
-	
-	// 새 전파 상태 생성
+
+	// 블록 높이에 따라 긴급 여부 결정
+	isUrgent := block.NumberU64()%100 == 0 // 100 블록마다 긴급 처리
+
+	// 전파 상태 생성
 	state := &propagationState{
-		block:     block,
-		td:        td,
-		peers:     make(map[string]bool),
-		startTime: time.Now(),
+		block:           block,
+		header:          block.Header(),
+		td:              td,
+		peers:           make(map[string]bool),
+		headerOnlyPeers: make(map[string]bool),
+		startTime:       time.Now(),
+		completed:       false,
+		isUrgent:        isUrgent,
 	}
+
 	bp.propagatedBlocks[hash] = state
 	bp.lock.Unlock()
-	
-	// 로그
-	bp.logger.Debug("Starting block propagation", "hash", hash.Hex(), "number", block.NumberU64())
-	
-	// 초기 전파
-	bp.propagateToInitialPeers(hash)
-	
-	// 통계 업데이트
-	bp.totalPropagated++
-	if bp.totalPropagated%propagationLogInterval == 0 {
-		bp.logPropagationStats()
+
+	// 긴급 블록이면 적극적 전파 모드로 설정
+	if isUrgent {
+		bp.setPropagationMode(PropagationModeAggressive)
 	}
+
+	// 초기 피어에게 전파
+	bp.propagateToInitialPeers(hash)
+
+	// 추가 피어에게 전파 (고루틴으로 실행)
+	go bp.propagateToAdditionalPeers(hash)
+
+	bp.logger.Debug("Started block propagation", "hash", hash.Hex(), "number", block.NumberU64(), "urgent", isUrgent)
 }
 
-// propagateToInitialPeers는 초기 피어들에게 블록을 전파합니다.
+// propagateToInitialPeers는 초기 피어 집합에게 블록을 전파합니다.
 func (bp *BlockPropagator) propagateToInitialPeers(hash common.Hash) {
-	// 전파 상태 가져오기
 	bp.lock.RLock()
-	state, ok := bp.propagatedBlocks[hash]
-	bp.lock.RUnlock()
-	
-	if !ok {
+	state, exists := bp.propagatedBlocks[hash]
+	if !exists {
+		bp.lock.RUnlock()
 		return
 	}
-	
+
+	// 전파 모드에 따라 피어 수 결정
+	peerCount := bp.adaptivePeerCount
+	switch bp.propagationMode {
+	case PropagationModeAggressive:
+		peerCount = maxPropagationPeers
+	case PropagationModeConservative:
+		peerCount = initialPropagationPeers / 2
+		if peerCount < 2 {
+			peerCount = 2
+		}
+	}
+	bp.lock.RUnlock()
+
 	// 모든 피어 가져오기
 	peers := bp.peerSet.AllPeers()
-	
-	// 피어가 없으면 전파 완료 표시
 	if len(peers) == 0 {
-		bp.markPropagationCompleted(hash)
 		return
 	}
-	
-	// 피어 셔플
-	rand.Shuffle(len(peers), func(i, j int) {
-		peers[i], peers[j] = peers[j], peers[i]
-	})
-	
-	// 초기 전파 피어 수 결정
-	numPeers := initialPropagationPeers
-	if numPeers > len(peers) {
-		numPeers = len(peers)
-	}
-	
-	// 선택된 피어들에게 전파
-	for i := 0; i < numPeers; i++ {
-		peer := peers[i]
-		
-		// 이미 전파된 피어인지 확인
-		bp.lock.RLock()
-		if state.peers[peer.ID().String()] {
-			bp.lock.RUnlock()
-			continue
+
+	// 검증자 노드 우선 선택
+	var validatorPeers []*Peer
+	var normalPeers []*Peer
+
+	for _, peer := range peers {
+		if bp.isValidatorNode(peer) {
+			validatorPeers = append(validatorPeers, peer)
+		} else {
+			normalPeers = append(normalPeers, peer)
 		}
-		bp.lock.RUnlock()
-		
+	}
+
+	// 선택할 피어 수 결정
+	validatorCount := len(validatorPeers)
+	remainingCount := peerCount - validatorCount
+
+	// 검증자 노드가 충분하지 않으면 일반 노드로 보충
+	selectedPeers := make([]*Peer, 0, peerCount)
+
+	// 검증자 노드 추가
+	if validatorCount > 0 {
+		if validatorCount <= peerCount {
+			selectedPeers = append(selectedPeers, validatorPeers...)
+		} else {
+			// 검증자가 너무 많으면 무작위로 선택
+			rand.Shuffle(validatorCount, func(i, j int) {
+				validatorPeers[i], validatorPeers[j] = validatorPeers[j], validatorPeers[i]
+			})
+			selectedPeers = append(selectedPeers, validatorPeers[:peerCount]...)
+			remainingCount = 0
+		}
+	}
+
+	// 일반 노드 추가
+	if remainingCount > 0 && len(normalPeers) > 0 {
+		rand.Shuffle(len(normalPeers), func(i, j int) {
+			normalPeers[i], normalPeers[j] = normalPeers[j], normalPeers[i]
+		})
+
+		count := remainingCount
+		if count > len(normalPeers) {
+			count = len(normalPeers)
+		}
+
+		selectedPeers = append(selectedPeers, normalPeers[:count]...)
+	}
+
+	// 선택된 피어에게 블록 전파
+	for i, peer := range selectedPeers {
+		// 헤더만 전파할지 결정 (검증자는 항상 전체 블록 전파)
+		headerOnly := !bp.isValidatorNode(peer) && float64(i)/float64(len(selectedPeers)) < headerOnlyPropagationRatio
+
 		// 전파 지연 계산
 		delay := time.Duration(rand.Intn(maxPropagationDelay-minPropagationDelay)+minPropagationDelay) * time.Millisecond
-		
-		// 고루틴으로 전파
-		go func(p *Peer, d time.Duration) {
+
+		// 검증자 노드는 지연 감소
+		if bp.isValidatorNode(peer) {
+			delay = delay / 2
+		}
+
+		// 긴급 블록은 지연 감소
+		if state.isUrgent {
+			delay = delay / 2
+		}
+
+		go func(p *Peer, d time.Duration, headerOnly bool) {
 			// 지연 적용
 			time.Sleep(d)
-			
-			// 블록 전송
-			err := p.SendNewBlock(state.block, state.td)
-			
-			// 전파 결과 처리
-			bp.lock.Lock()
-			if err == nil {
-				state.peers[p.ID().String()] = true
-				bp.totalPeers++
-			}
-			bp.lock.Unlock()
-			
-			// 추가 피어에게 전파
-			bp.propagateToAdditionalPeers(hash)
-		}(peer, delay)
+
+			// 블록 전파
+			bp.propagateBlockToPeer(hash, p, headerOnly)
+		}(peer, delay, headerOnly)
 	}
 }
 
-// propagateToAdditionalPeers는 추가 피어들에게 블록을 전파합니다.
+// isValidatorNode는 피어가 검증자 노드인지 확인합니다.
+func (bp *BlockPropagator) isValidatorNode(peer *Peer) bool {
+	if bp.validatorSet == nil {
+		return false
+	}
+
+	// 피어 ID를 주소로 변환 (실제 구현에서는 피어의 노드 ID를 주소로 변환하는 로직 필요)
+	// 여기서는 임의의 주소 사용
+	addr := common.Address{}
+
+	// 검증자 집합에 포함되어 있는지 확인
+	return bp.validatorSet.Contains(addr)
+}
+
+// propagateBlockToPeer는 특정 피어에게 블록을 전파합니다.
+func (bp *BlockPropagator) propagateBlockToPeer(hash common.Hash, peer *Peer, headerOnly bool) {
+	bp.lock.Lock()
+	state, exists := bp.propagatedBlocks[hash]
+	if !exists {
+		bp.lock.Unlock()
+		return
+	}
+
+	// 이미 전파된 피어인지 확인
+	peerID := peer.ID().String()
+	if state.peers[peerID] || state.headerOnlyPeers[peerID] {
+		bp.lock.Unlock()
+		return
+	}
+
+	// 전파 상태 업데이트
+	if headerOnly {
+		state.headerOnlyPeers[peerID] = true
+	} else {
+		state.peers[peerID] = true
+	}
+	bp.lock.Unlock()
+
+	// 블록 또는 헤더 전송
+	var err error
+	if headerOnly {
+		// 헤더만 전송 (실제 구현에서는 헤더 전송 메서드 필요)
+		// 여기서는 임시로 블록 전송 메서드 사용
+		err = peer.SendNewBlock(state.block, state.td)
+	} else {
+		err = peer.SendNewBlock(state.block, state.td)
+	}
+
+	if err != nil {
+		bp.logger.Debug("Failed to propagate block", "peer", peer.ID().String(), "hash", hash.Hex(), "error", err)
+
+		// 전파 실패 시 상태 업데이트
+		bp.lock.Lock()
+		if headerOnly {
+			delete(state.headerOnlyPeers, peerID)
+		} else {
+			delete(state.peers, peerID)
+		}
+		bp.lock.Unlock()
+	} else {
+		bp.logger.Trace("Propagated block", "peer", peer.ID().String(), "hash", hash.Hex(), "header_only", headerOnly)
+	}
+}
+
+// propagateToAdditionalPeers는 추가 피어에게 블록을 전파합니다.
 func (bp *BlockPropagator) propagateToAdditionalPeers(hash common.Hash) {
-	// 전파 상태 가져오기
-	bp.lock.RLock()
-	state, ok := bp.propagatedBlocks[hash]
-	if !ok {
-		bp.lock.RUnlock()
-		return
+	// 전파 완료 대기
+	timer := time.NewTimer(propagationTimeout)
+	defer timer.Stop()
+
+	// 추가 전파 간격
+	ticker := time.NewTicker(propagationInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-bp.quit:
+			return
+		case <-timer.C:
+			// 타임아웃 - 전파 완료 처리
+			bp.markPropagationCompleted(hash)
+			return
+		case <-ticker.C:
+			// 추가 피어에게 전파
+			completed := bp.propagateToMorePeers(hash)
+			if completed {
+				bp.markPropagationCompleted(hash)
+				return
+			}
+		}
 	}
-	
-	// 이미 충분히 전파되었는지 확인
-	if len(state.peers) >= maxPropagationPeers {
-		bp.lock.RUnlock()
-		bp.markPropagationCompleted(hash)
-		return
+}
+
+// propagateToMorePeers는 더 많은 피어에게 블록을 전파합니다.
+func (bp *BlockPropagator) propagateToMorePeers(hash common.Hash) bool {
+	bp.lock.Lock()
+	state, exists := bp.propagatedBlocks[hash]
+	if !exists || state.completed {
+		bp.lock.Unlock()
+		return true
 	}
-	bp.lock.RUnlock()
-	
-	// 모든 피어 가져오기
+
+	// 이미 전파된 피어 수 확인
+	propagatedCount := len(state.peers) + len(state.headerOnlyPeers)
+
+	// 전파 모드에 따라 목표 피어 수 결정
+	targetPeerCount := bp.adaptivePeerCount * 2
+	switch bp.propagationMode {
+	case PropagationModeAggressive:
+		targetPeerCount = maxPropagationPeers * 2
+	case PropagationModeConservative:
+		targetPeerCount = bp.adaptivePeerCount
+	}
+
+	// 모든 피어에게 전파 완료 확인
 	allPeers := bp.peerSet.AllPeers()
-	
-	// 아직 전파되지 않은 피어 필터링
+	if propagatedCount >= len(allPeers) || propagatedCount >= targetPeerCount {
+		state.completed = true
+		bp.lock.Unlock()
+		return true
+	}
+	bp.lock.Unlock()
+
+	// 아직 전파되지 않은 피어 선택
 	var candidates []*Peer
-	bp.lock.RLock()
 	for _, peer := range allPeers {
-		if !state.peers[peer.ID().String()] {
+		bp.lock.RLock()
+		_, propagated := state.peers[peer.ID().String()]
+		_, headerOnly := state.headerOnlyPeers[peer.ID().String()]
+		bp.lock.RUnlock()
+
+		if !propagated && !headerOnly {
 			candidates = append(candidates, peer)
 		}
 	}
-	bp.lock.RUnlock()
-	
-	// 전파할 피어가 없으면 전파 완료 표시
+
 	if len(candidates) == 0 {
-		bp.markPropagationCompleted(hash)
-		return
+		return false
 	}
-	
-	// 피어 셔플
+
+	// 추가로 전파할 피어 수 결정
+	additionalCount := targetPeerCount - propagatedCount
+	if additionalCount > len(candidates) {
+		additionalCount = len(candidates)
+	}
+
+	// 무작위로 피어 선택
 	rand.Shuffle(len(candidates), func(i, j int) {
 		candidates[i], candidates[j] = candidates[j], candidates[i]
 	})
-	
-	// 추가로 전파할 피어 수 결정
-	bp.lock.RLock()
-	numPropagated := len(state.peers)
-	bp.lock.RUnlock()
-	
-	numAdditional := maxPropagationPeers - numPropagated
-	if numAdditional > len(candidates) {
-		numAdditional = len(candidates)
-	}
-	
-	// 선택된 피어들에게 전파
-	for i := 0; i < numAdditional; i++ {
+
+	// 선택된 피어에게 전파
+	for i := 0; i < additionalCount; i++ {
 		peer := candidates[i]
-		
+
+		// 헤더만 전파할지 결정
+		headerOnly := float64(i)/float64(additionalCount) < headerOnlyPropagationRatio
+
 		// 전파 지연 계산
 		delay := time.Duration(rand.Intn(maxPropagationDelay-minPropagationDelay)+minPropagationDelay) * time.Millisecond
-		
-		// 고루틴으로 전파
-		go func(p *Peer, d time.Duration) {
-			// 지연 적용
+
+		go func(p *Peer, d time.Duration, headerOnly bool) {
 			time.Sleep(d)
-			
-			// 블록 전송
-			err := p.SendNewBlock(state.block, state.td)
-			
-			// 전파 결과 처리
-			bp.lock.Lock()
-			if err == nil {
-				state.peers[p.ID().String()] = true
-				bp.totalPeers++
-			}
-			bp.lock.Unlock()
-			
-			// 모든 피어에게 전파되었는지 확인
-			bp.lock.RLock()
-			allPropagated := len(state.peers) >= maxPropagationPeers
-			bp.lock.RUnlock()
-			
-			if allPropagated {
-				bp.markPropagationCompleted(hash)
-			}
-		}(peer, delay)
+			bp.propagateBlockToPeer(hash, p, headerOnly)
+		}(peer, delay, headerOnly)
 	}
-}
 
-// markPropagationCompleted는 블록 전파가 완료되었음을 표시합니다.
-func (bp *BlockPropagator) markPropagationCompleted(hash common.Hash) {
-	bp.lock.Lock()
-	defer bp.lock.Unlock()
-	
-	state, ok := bp.propagatedBlocks[hash]
-	if !ok {
-		return
-	}
-	
-	// 이미 완료된 경우 무시
-	if state.completed {
-		return
-	}
-	
-	// 완료 표시
-	state.completed = true
-	state.endTime = time.Now()
-	
-	// 전파 시간 통계 업데이트
-	propagationTime := state.endTime.Sub(state.startTime)
-	bp.propagationTimes = append(bp.propagationTimes, propagationTime)
-	if len(bp.propagationTimes) > 100 {
-		bp.propagationTimes = bp.propagationTimes[1:]
-	}
-	
-	// 로그
-	bp.logger.Debug("Block propagation completed", 
-		"hash", hash.Hex(), 
-		"number", state.block.NumberU64(),
-		"peers", len(state.peers),
-		"time", propagationTime)
-}
-
-// logPropagationStats는 전파 통계를 로깅합니다.
-func (bp *BlockPropagator) logPropagationStats() {
-	bp.lock.RLock()
-	defer bp.lock.RUnlock()
-	
-	// 평균 전파 시간 계산
-	var totalTime time.Duration
-	for _, t := range bp.propagationTimes {
-		totalTime += t
-	}
-	
-	var avgTime time.Duration
-	if len(bp.propagationTimes) > 0 {
-		avgTime = totalTime / time.Duration(len(bp.propagationTimes))
-	}
-	
-	// 평균 피어 수 계산
-	var avgPeers float64
-	if bp.totalPropagated > 0 {
-		avgPeers = float64(bp.totalPeers) / float64(bp.totalPropagated)
-	}
-	
-	bp.logger.Info("Block propagation statistics", 
-		"blocks", bp.totalPropagated,
-		"avg_peers", avgPeers,
-		"avg_time", avgTime)
+	return false
 }
 
 // GetPropagationStats는 전파 통계를 반환합니다.
 func (bp *BlockPropagator) GetPropagationStats() map[string]interface{} {
 	bp.lock.RLock()
 	defer bp.lock.RUnlock()
-	
-	// 평균 전파 시간 계산
-	var totalTime time.Duration
-	for _, t := range bp.propagationTimes {
-		totalTime += t
-	}
-	
-	var avgTime time.Duration
-	if len(bp.propagationTimes) > 0 {
-		avgTime = totalTime / time.Duration(len(bp.propagationTimes))
-	}
-	
-	// 평균 피어 수 계산
-	var avgPeers float64
-	if bp.totalPropagated > 0 {
-		avgPeers = float64(bp.totalPeers) / float64(bp.totalPropagated)
-	}
-	
-	// 현재 전파 중인 블록 수
+
+	// 활성 전파 수 계산
 	var activePropagations int
 	for _, state := range bp.propagatedBlocks {
 		if !state.completed {
 			activePropagations++
 		}
 	}
-	
-	return map[string]interface{}{
-		"total_blocks":       bp.totalPropagated,
-		"total_peers":        bp.totalPeers,
-		"avg_peers_per_block": avgPeers,
-		"avg_propagation_time": avgTime.String(),
-		"active_propagations": activePropagations,
+
+	// 평균 전파 시간 계산
+	var totalTime time.Duration
+	for _, t := range bp.propagationTimes {
+		totalTime += t
 	}
-} 
+
+	var avgTime time.Duration
+	if len(bp.propagationTimes) > 0 {
+		avgTime = totalTime / time.Duration(len(bp.propagationTimes))
+	}
+
+	return map[string]interface{}{
+		"total_propagated":     bp.totalPropagated,
+		"total_peers":          bp.totalPeers,
+		"avg_propagation_time": avgTime.String(),
+		"active_propagations":  activePropagations,
+		"network_congestion":   bp.networkCongestion,
+		"propagation_mode":     bp.propagationMode,
+		"adaptive_peer_count":  bp.adaptivePeerCount,
+	}
+}

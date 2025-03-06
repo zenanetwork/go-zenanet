@@ -18,7 +18,6 @@
 package core
 
 import (
-	"errors"
 	"fmt"
 	"math/big"
 
@@ -70,10 +69,10 @@ type CoreAdapterInterface interface {
 	Seal(chain consensus.ChainHeaderReader, block *types.Block, results chan<- *types.Block, stop <-chan struct{}) error
 	SealHash(header *types.Header) common.Hash
 	CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int
-	
+
 	// 스냅샷 관련 메서드
 	Snapshot(chain consensus.ChainHeaderReader, number uint64, hash common.Hash, parents []*types.Header) (*Snapshot, error)
-	
+
 	// 거버넌스 관련 메서드
 	SubmitProposal(proposer common.Address, title string, description string, proposalType string, parameters map[string]string, upgrade *utils.UpgradeInfo, funding *utils.FundingInfo, deposit *big.Int) (uint64, error)
 	Vote(proposalID uint64, voter common.Address, option string) error
@@ -82,11 +81,11 @@ type CoreAdapterInterface interface {
 	GetProposal(proposalID uint64) (utils.ProposalInterface, error)
 	GetProposals() []utils.ProposalInterface
 	GetVotes(proposalID uint64) ([]ProposalVote, error)
-	
+
 	// 검증자 관련 메서드
 	GetValidatorSet() utils.ValidatorSetInterface
 	GetGovernanceState() utils.GovernanceInterface
-	
+
 	// 상태 관리 메서드
 	GetState(stateDB *state.StateDB) error
 	SaveState(stateDB *state.StateDB) error
@@ -103,7 +102,7 @@ func (a *BaseCoreAdapter) VerifyHeaders(chain consensus.ChainHeaderReader, heade
 	// 기본 구현은 항상 성공
 	abort := make(chan struct{})
 	results := make(chan error, len(headers))
-	
+
 	go func() {
 		for i := 0; i < len(headers); i++ {
 			select {
@@ -113,7 +112,7 @@ func (a *BaseCoreAdapter) VerifyHeaders(chain consensus.ChainHeaderReader, heade
 			}
 		}
 	}()
-	
+
 	return abort, results
 }
 
@@ -138,13 +137,13 @@ func (a *BaseCoreAdapter) Finalize(chain consensus.ChainHeaderReader, header *ty
 func (a *BaseCoreAdapter) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header, receipts []*types.Receipt) (*types.Block, error) {
 	// 기본 구현은 단순히 블록을 생성
 	a.Finalize(chain, header, state, txs, uncles)
-	
+
 	// 블록 바디 생성
 	body := &types.Body{
 		Transactions: txs,
 		Uncles:       uncles,
 	}
-	
+
 	// 블록 생성
 	return types.NewBlock(header, body, receipts, nil), nil
 }
@@ -186,22 +185,33 @@ func (a *BaseCoreAdapter) Snapshot(chain consensus.ChainHeaderReader, number uin
 func (a *BaseCoreAdapter) ProcessProposals(currentBlock uint64) error {
 	// 거버넌스 인터페이스가 없는 경우 오류 반환
 	if a.governance == nil {
-		return errors.New("governance interface not set")
+		a.logger.Error("governance interface not set")
+		return utils.ErrInternalError
 	}
-	
+
 	// 모든 제안 가져오기
 	proposals := a.governance.GetProposals()
-	
+
 	// 각 제안 처리
 	for _, proposal := range proposals {
 		// 투표 기간이 끝난 제안 처리
 		if proposal.GetStatus() == utils.ProposalStatusVotingPeriod && currentBlock > proposal.GetVotingEndBlock() {
-			// 제안 실행 (실제 구현에서는 상태 DB를 사용해야 함)
-			// 여기서는 간단히 로그만 출력
-			a.logger.Info("Processing proposal", "id", proposal.GetID(), "status", proposal.GetStatus())
+			// 제안 실행
+			stateDB, err := a.getStateDB(nil)
+			if err != nil {
+				a.logger.Error("Failed to get state DB", "error", err)
+				return utils.WrapError(err, "failed to get state DB")
+			}
+
+			err = a.governance.ExecuteProposal(proposal.GetID(), stateDB)
+			if err != nil {
+				a.logger.Error("Failed to execute proposal", "id", proposal.GetID(), "error", err)
+				// 개별 제안 처리 실패는 전체 프로세스를 중단하지 않음
+				// 로그만 남기고 계속 진행
+			}
 		}
 	}
-	
+
 	return nil
 }
 
@@ -209,23 +219,29 @@ func (a *BaseCoreAdapter) ProcessProposals(currentBlock uint64) error {
 func (a *BaseCoreAdapter) ExecuteProposal(proposalID uint64) error {
 	// 거버넌스 인터페이스가 없는 경우 오류 반환
 	if a.governance == nil {
-		return errors.New("governance interface not set")
+		a.logger.Error("governance interface not set")
+		return utils.ErrInternalError
 	}
-	
-	// 제안 실행 (실제 구현에서는 상태 DB를 사용해야 함)
-	// 여기서는 간단히 로그만 출력
-	a.logger.Info("Executing proposal", "id", proposalID)
-	
-	return nil
+
+	// 상태 DB 가져오기
+	stateDB, err := a.getStateDB(nil)
+	if err != nil {
+		a.logger.Error("Failed to get state DB", "error", err)
+		return utils.WrapError(err, "failed to get state DB")
+	}
+
+	// 제안 실행
+	return a.governance.ExecuteProposal(proposalID, stateDB)
 }
 
 // SubmitProposal은 새로운 제안을 제출합니다.
 func (a *BaseCoreAdapter) SubmitProposal(proposer common.Address, title string, description string, proposalType string, parameters map[string]string, upgrade *utils.UpgradeInfo, funding *utils.FundingInfo, deposit *big.Int) (uint64, error) {
 	// 거버넌스 인터페이스가 없는 경우 오류 반환
 	if a.governance == nil {
-		return 0, errors.New("governance interface not set")
+		a.logger.Error("governance interface not set")
+		return 0, utils.ErrInternalError
 	}
-	
+
 	// 제안 내용 생성
 	var content utils.ProposalContentInterface
 	switch proposalType {
@@ -235,14 +251,16 @@ func (a *BaseCoreAdapter) SubmitProposal(proposer common.Address, title string, 
 		}
 	case utils.ProposalTypeUpgrade:
 		if upgrade == nil {
-			return 0, errors.New("upgrade info is required for upgrade proposal")
+			a.logger.Error("upgrade info is required for upgrade proposal")
+			return 0, utils.FormatError(utils.ErrInvalidParameter, "upgrade info is required for upgrade proposal")
 		}
 		content = &upgradeProposal{
 			Info: *upgrade,
 		}
 	case utils.ProposalTypeFunding:
 		if funding == nil {
-			return 0, errors.New("funding info is required for funding proposal")
+			a.logger.Error("funding info is required for funding proposal")
+			return 0, utils.FormatError(utils.ErrInvalidParameter, "funding info is required for funding proposal")
 		}
 		content = &fundingProposal{
 			Info: *funding,
@@ -250,40 +268,51 @@ func (a *BaseCoreAdapter) SubmitProposal(proposer common.Address, title string, 
 	case utils.ProposalTypeText:
 		content = &textProposal{}
 	default:
-		return 0, errors.New("invalid proposal type")
+		a.logger.Error("invalid proposal type", "type", proposalType)
+		return 0, utils.FormatError(utils.ErrInvalidProposalType, "invalid proposal type: %s", proposalType)
 	}
-	
-	// 제안 제출 (실제 구현에서는 상태 DB를 사용해야 함)
-	// 여기서는 간단히 로그만 출력
-	a.logger.Info("Submitting proposal", "proposer", proposer.Hex(), "type", proposalType, "title", title, "content", content.GetType())
-	
-	// 임시 구현: 항상 1 반환
-	return 1, nil
+
+	// 상태 DB 가져오기
+	stateDB, err := a.getStateDB(nil)
+	if err != nil {
+		a.logger.Error("Failed to get state DB", "error", err)
+		return 0, utils.WrapError(err, "failed to get state DB")
+	}
+
+	// 제안 제출
+	return a.governance.SubmitProposal(proposer, title, description, proposalType, content, deposit, stateDB)
 }
 
 // Vote는 제안에 투표합니다.
 func (a *BaseCoreAdapter) Vote(proposalID uint64, voter common.Address, option string) error {
 	// 거버넌스 인터페이스가 없는 경우 오류 반환
 	if a.governance == nil {
-		return errors.New("governance interface not set")
+		a.logger.Error("governance interface not set")
+		return utils.ErrInternalError
 	}
-	
-	// 투표 제출
-	return a.governance.Vote(proposalID, voter, option)
+
+	// 상태 DB 가져오기
+	stateDB, err := a.getStateDB(nil)
+	if err != nil {
+		a.logger.Error("Failed to get state DB", "error", err)
+		return utils.WrapError(err, "failed to get state DB")
+	}
+
+	// 투표 옵션 검증
+	if !utils.IsValidVoteOption(option) {
+		a.logger.Error("invalid vote option", "option", option)
+		return utils.FormatError(utils.ErrInvalidVoteOption, "invalid vote option: %s", option)
+	}
+
+	// 투표
+	return a.governance.Vote(proposalID, voter, option, stateDB)
 }
 
-// getStateDB는 현재 블록의 상태 DB를 가져옵니다.
+// getStateDB는 상태 DB를 가져옵니다.
 func (a *BaseCoreAdapter) getStateDB(chain consensus.ChainHeaderReader) (*state.StateDB, error) {
-	// 현재 블록 헤더 가져오기
-	header := chain.CurrentHeader()
-	if header == nil {
-		return nil, errors.New("current header not found")
-	}
-	
-	// 상태 DB 가져오기
-	// 참고: 실제 구현에서는 state.New 함수의 올바른 인자를 사용해야 함
-	// 여기서는 임시로 nil을 반환
-	return nil, errors.New("not implemented")
+	// 실제 구현에서는 체인에서 상태 DB를 가져와야 함
+	// 여기서는 임시로 nil 반환
+	return nil, utils.ErrNotImplemented
 }
 
 // parameterChangeProposal은 매개변수 변경 제안을 나타냅니다.
@@ -299,8 +328,10 @@ func (p *parameterChangeProposal) GetType() string {
 // Validate는 제안의 유효성을 검증합니다.
 func (p *parameterChangeProposal) Validate() error {
 	if p.Changes == nil || len(p.Changes) == 0 {
-		return errors.New("changes cannot be empty")
+		return utils.FormatError(utils.ErrInvalidParameter, "parameter changes cannot be empty")
 	}
+
+	// 실제 구현에서는 각 매개변수의 유효성을 검증해야 함
 	return nil
 }
 
@@ -327,21 +358,23 @@ func (p *upgradeProposal) GetType() string {
 
 // Validate는 제안의 유효성을 검증합니다.
 func (p *upgradeProposal) Validate() error {
-	if p.Info.Name == "" {
-		return errors.New("upgrade name cannot be empty")
+	if p.Info.Version == "" {
+		return utils.FormatError(utils.ErrInvalidParameter, "upgrade version cannot be empty")
 	}
-	if p.Info.Height == 0 {
-		return errors.New("upgrade height cannot be zero")
+
+	if p.Info.Height <= 0 {
+		return utils.FormatError(utils.ErrInvalidParameter, "upgrade height must be positive")
 	}
+
+	// 실제 구현에서는 추가 검증 필요
 	return nil
 }
 
 // GetParams는 제안의 매개변수를 반환합니다.
 func (p *upgradeProposal) GetParams() map[string]string {
 	return map[string]string{
-		"name":   p.Info.Name,
-		"height": fmt.Sprintf("%d", p.Info.Height),
-		"info":   p.Info.Info,
+		"version": fmt.Sprintf("%d", p.Info.Height),
+		"info":    p.Info.Info,
 	}
 }
 
@@ -363,12 +396,15 @@ func (p *fundingProposal) GetType() string {
 
 // Validate는 제안의 유효성을 검증합니다.
 func (p *fundingProposal) Validate() error {
-	if p.Info.Recipient == (common.Address{}) {
-		return errors.New("recipient cannot be empty")
+	if p.Info.Recipient.Hex() == "0x0000000000000000000000000000000000000000" {
+		return utils.FormatError(utils.ErrInvalidParameter, "recipient address cannot be zero address")
 	}
+
 	if p.Info.Amount == nil || p.Info.Amount.Cmp(big.NewInt(0)) <= 0 {
-		return errors.New("amount must be positive")
+		return utils.FormatError(utils.ErrInvalidParameter, "funding amount must be positive")
 	}
+
+	// 실제 구현에서는 추가 검증 필요
 	return nil
 }
 
@@ -416,10 +452,10 @@ func (p *textProposal) Execute(state *state.StateDB) error {
 func (a *BaseCoreAdapter) GetProposal(proposalID uint64) (utils.ProposalInterface, error) {
 	// 거버넌스 인터페이스가 없는 경우 오류 반환
 	if a.governance == nil {
-		return nil, errors.New("governance interface not set")
+		a.logger.Error("governance interface not set")
+		return nil, utils.ErrInternalError
 	}
-	
-	// 제안 조회
+
 	return a.governance.GetProposal(proposalID)
 }
 
@@ -427,10 +463,10 @@ func (a *BaseCoreAdapter) GetProposal(proposalID uint64) (utils.ProposalInterfac
 func (a *BaseCoreAdapter) GetProposals() []utils.ProposalInterface {
 	// 거버넌스 인터페이스가 없는 경우 빈 배열 반환
 	if a.governance == nil {
+		a.logger.Error("governance interface not set")
 		return []utils.ProposalInterface{}
 	}
-	
-	// 제안 목록 조회
+
 	return a.governance.GetProposals()
 }
 
@@ -438,10 +474,12 @@ func (a *BaseCoreAdapter) GetProposals() []utils.ProposalInterface {
 func (a *BaseCoreAdapter) GetVotes(proposalID uint64) ([]ProposalVote, error) {
 	// 거버넌스 인터페이스가 없는 경우 오류 반환
 	if a.governance == nil {
-		return nil, errors.New("governance interface not set")
+		a.logger.Error("governance interface not set")
+		return nil, utils.ErrInternalError
 	}
-	
+
 	// 임시 구현: 빈 배열 반환
+	// 실제 구현에서는 제안의 투표 정보를 가져와야 함
 	return []ProposalVote{}, nil
 }
 
@@ -455,14 +493,14 @@ func (a *BaseCoreAdapter) GetGovernanceState() utils.GovernanceInterface {
 	return a.governance
 }
 
-// GetState는 상태 DB에서 상태를 로드합니다.
+// GetState는 상태를 가져옵니다.
 func (a *BaseCoreAdapter) GetState(stateDB *state.StateDB) error {
-	// 기본 구현은 항상 성공
-	return nil
+	// 실제 구현에서는 상태 DB에서 상태를 가져와야 함
+	return utils.ErrNotImplemented
 }
 
-// SaveState는 상태를 상태 DB에 저장합니다.
+// SaveState는 상태를 저장합니다.
 func (a *BaseCoreAdapter) SaveState(stateDB *state.StateDB) error {
-	// 기본 구현은 항상 성공
-	return nil
-} 
+	// 실제 구현에서는 상태 DB에 상태를 저장해야 함
+	return utils.ErrNotImplemented
+}

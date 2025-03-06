@@ -21,6 +21,7 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"math/big"
 
 	"github.com/zenanetwork/go-zenanet/common"
@@ -41,7 +42,7 @@ type API struct {
 }
 
 // GetSnapshot은 지정된 블록 번호에서 검증자 상태의 스냅샷을 반환합니다.
-// 
+//
 // 매개변수:
 //   - number: 스냅샷을 가져올 블록 번호. nil인 경우 최신 블록 사용
 //
@@ -78,8 +79,8 @@ func (api *API) GetSnapshot(number *uint64) (*Snapshot, error) {
 //   - error: 오류 발생 시 반환
 func (api *API) GetValidators() ([]map[string]interface{}, error) {
 	// 검증자 목록 가져오기
-	validators := api.eirene.validatorSet.GetActiveValidators()
-	
+	validators := api.eirene.stakingAdapter.GetActiveValidators()
+
 	// 결과 생성
 	result := make([]map[string]interface{}, len(validators))
 	for i, validator := range validators {
@@ -90,31 +91,31 @@ func (api *API) GetValidators() ([]map[string]interface{}, error) {
 		info["status"] = validator.GetStatus()
 		result[i] = info
 	}
-	
+
 	return result, nil
 }
 
-// GetValidator는 지정된 주소의 검증자 정보를 반환합니다.
+// GetValidator는 특정 검증자의 정보를 반환합니다.
 //
 // 매개변수:
 //   - address: 검증자 주소
 //
 // 반환값:
 //   - map[string]interface{}: 검증자 정보 (주소, 투표력, 상태 등)
-//   - error: 오류 발생 시 반환 (검증자가 존재하지 않는 경우 "validator not found" 오류)
+//   - error: 오류 발생 시 반환
 func (api *API) GetValidator(address common.Address) (map[string]interface{}, error) {
-	// 검증자 확인
-	validator := api.eirene.validatorSet.GetValidatorByAddress(address)
+	// 검증자 정보 가져오기
+	validator := api.eirene.stakingAdapter.GetValidatorByAddress(address)
 	if validator == nil {
-		return nil, errors.New("validator not found")
+		return nil, fmt.Errorf("validator not found: %s", address.Hex())
 	}
-	
+
 	// 검증자 정보 생성
 	info := make(map[string]interface{})
 	info["address"] = validator.GetAddress()
 	info["votingPower"] = validator.GetVotingPower()
 	info["status"] = validator.GetStatus()
-	
+
 	return info, nil
 }
 
@@ -257,28 +258,28 @@ func (api *API) SetSignerPrivateKey(privateKey hexutil.Bytes) (bool, error) {
 	if len(privateKey) != 32 {
 		return false, errors.New("invalid private key length")
 	}
-	
+
 	// 개인 키로부터 ECDSA 키 생성
 	key, err := crypto.ToECDSA(privateKey)
 	if err != nil {
 		return false, err
 	}
-	
+
 	// 개인 키로부터 주소 추출
 	address := crypto.PubkeyToAddress(key.PublicKey)
-	
+
 	// 서명 함수 생성
 	signFn := func(signer common.Address, hash []byte) ([]byte, error) {
 		return crypto.Sign(hash, key)
 	}
-	
+
 	// 서명자 설정
 	api.eirene.lock.Lock()
 	defer api.eirene.lock.Unlock()
-	
+
 	api.eirene.signer = address
 	api.eirene.signFn = signFn
-	
+
 	return true, nil
 }
 
@@ -492,17 +493,17 @@ func (api *API) GetValidatorStats(number *rpc.BlockNumber) (map[string]interface
 
 // Proposal은 거버넌스 제안을 나타냅니다.
 type Proposal struct {
-	ID               uint64         `json:"id"`
-	Title            string         `json:"title"`
-	Description      string         `json:"description"`
-	Type             string         `json:"type"`
-	Status           string         `json:"status"`
-	Proposer         common.Address `json:"proposer"`
-	VotingStartBlock uint64         `json:"votingStartBlock"`
-	VotingEndBlock   uint64         `json:"votingEndBlock"`
+	ID               uint64            `json:"id"`
+	Title            string            `json:"title"`
+	Description      string            `json:"description"`
+	Type             string            `json:"type"`
+	Status           string            `json:"status"`
+	Proposer         common.Address    `json:"proposer"`
+	VotingStartBlock uint64            `json:"votingStartBlock"`
+	VotingEndBlock   uint64            `json:"votingEndBlock"`
 	Parameters       map[string]string `json:"parameters,omitempty"`
-	Deposit          *big.Int       `json:"deposit"`
-	TotalVotes       *big.Int       `json:"totalVotes"`
+	Deposit          *big.Int          `json:"deposit"`
+	TotalVotes       *big.Int          `json:"totalVotes"`
 }
 
 // UpgradeInfo는 업그레이드 제안에 대한 정보를 나타냅니다.
@@ -536,16 +537,16 @@ func (api *GovernanceAPI) GetProposal(proposalID uint64) (*Proposal, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// 인터페이스를 구체적인 타입으로 변환
 	// 실제 구현에서는 적절한 변환 로직이 필요합니다
 	return &Proposal{
-		ID:          proposal.GetID(),
-		Title:       proposal.GetTitle(),
-		Description: proposal.GetDescription(),
-		Type:        proposal.GetType(),
-		Status:      proposal.GetStatus(),
-		Proposer:    proposal.GetProposer(),
+		ID:               proposal.GetID(),
+		Title:            proposal.GetTitle(),
+		Description:      proposal.GetDescription(),
+		Type:             proposal.GetType(),
+		Status:           proposal.GetStatus(),
+		Proposer:         proposal.GetProposer(),
 		VotingStartBlock: proposal.GetVotingStartBlock(),
 		VotingEndBlock:   proposal.GetVotingEndBlock(),
 	}, nil
@@ -555,21 +556,21 @@ func (api *GovernanceAPI) GetProposal(proposalID uint64) (*Proposal, error) {
 func (api *GovernanceAPI) GetProposals() []*Proposal {
 	proposals := api.eirene.GetProposals()
 	result := make([]*Proposal, 0, len(proposals))
-	
+
 	// 인터페이스 목록을 구체적인 타입 목록으로 변환
 	for _, proposal := range proposals {
 		result = append(result, &Proposal{
-			ID:          proposal.GetID(),
-			Title:       proposal.GetTitle(),
-			Description: proposal.GetDescription(),
-			Type:        proposal.GetType(),
-			Status:      proposal.GetStatus(),
-			Proposer:    proposal.GetProposer(),
+			ID:               proposal.GetID(),
+			Title:            proposal.GetTitle(),
+			Description:      proposal.GetDescription(),
+			Type:             proposal.GetType(),
+			Status:           proposal.GetStatus(),
+			Proposer:         proposal.GetProposer(),
 			VotingStartBlock: proposal.GetVotingStartBlock(),
 			VotingEndBlock:   proposal.GetVotingEndBlock(),
 		})
 	}
-	
+
 	return result
 }
 
@@ -595,7 +596,7 @@ func (api *GovernanceAPI) SubmitProposal(
 	if err != nil {
 		return 0, err
 	}
-	
+
 	// 제안 유형을 문자열로 변환
 	var proposalTypeStr string
 	switch proposalType {
@@ -610,15 +611,15 @@ func (api *GovernanceAPI) SubmitProposal(
 	default:
 		return 0, errors.New("invalid proposal type")
 	}
-	
+
 	// 제안 내용 생성
 	var content utils.ProposalContentInterface
-	
+
 	// 실제 구현에서는 적절한 내용 생성 로직이 필요합니다
 	// 현재는 임시 구현
-	
+
 	// 제안 제출
-	return api.eirene.governance.SubmitProposal(
+	return api.eirene.govAdapter.SubmitProposal(
 		proposer,
 		title,
 		description,
@@ -650,7 +651,7 @@ func (api *GovernanceAPI) Vote(
 	default:
 		return errors.New("invalid vote option")
 	}
-	
+
 	return api.eirene.Vote(
 		proposalID,
 		voter,
@@ -663,10 +664,10 @@ func (api *GovernanceAPI) GetGovernanceParams() map[string]interface{} {
 	// 실제 구현에서는 거버넌스 매개변수를 가져오는 로직이 필요합니다
 	// 현재는 임시 구현으로 테스트에서 사용하는 기본값과 일치하도록 설정
 	return map[string]interface{}{
-		"votingPeriod": uint64(100800), // 약 1주일(100800블록)
-		"quorum": 0.334,                // 33.4%
-		"threshold": 0.5,               // 50%
-		"vetoThreshold": 0.334,         // 33.4%
+		"votingPeriod":  uint64(100800), // 약 1주일(100800블록)
+		"quorum":        0.334,          // 33.4%
+		"threshold":     0.5,            // 50%
+		"vetoThreshold": 0.334,          // 33.4%
 	}
 }
 
@@ -683,39 +684,42 @@ func NewSlashingAPI(chain consensus.ChainHeaderReader, eirene *Eirene) *Slashing
 
 // GetValidatorSigningInfo는 검증자의 서명 정보를 반환합니다.
 func (api *SlashingAPI) GetValidatorSigningInfo(validator common.Address) (*ValidatorSigningInfo, error) {
-	info, exists := api.eirene.slashingState.ValidatorSigningInfo[validator]
+	// 슬래싱 상태에서 검증자 서명 정보 가져오기
+	info, exists := api.eirene.GetSlashingState().ValidatorSigningInfo[validator]
 	if !exists {
 		return nil, errors.New("validator signing info not found")
 	}
 	return info, nil
 }
 
-// GetEvidences는 검증자의 슬래싱 증거 목록을 반환합니다.
+// GetEvidences는 검증자에 대한 슬래싱 증거를 반환합니다.
 func (api *SlashingAPI) GetEvidences(validator common.Address) []SlashingEvidence {
-	return api.eirene.slashingState.getEvidences(validator)
+	// 슬래싱 상태에서 증거 가져오기
+	return api.eirene.GetSlashingState().getEvidences(validator)
 }
 
-// ReportDoubleSign은 이중 서명을 신고합니다.
+// ReportDoubleSign은 이중 서명 증거를 보고합니다.
 func (api *SlashingAPI) ReportDoubleSign(reporter common.Address, evidence DoubleSignEvidence) error {
 	return api.eirene.reportDoubleSign(reporter, evidence)
 }
 
-// Unjail은 검증자의 감금을 해제합니다.
+// Unjail은 검증자를 감옥에서 풀어줍니다.
 func (api *SlashingAPI) Unjail(validator common.Address) error {
 	return api.eirene.unjailValidator(validator)
 }
 
 // GetSlashingParams는 슬래싱 매개변수를 반환합니다.
 func (api *SlashingAPI) GetSlashingParams() map[string]interface{} {
+	slashingState := api.eirene.GetSlashingState()
 	return map[string]interface{}{
-		"doubleSignSlashRatio":  api.eirene.slashingState.DoubleSignSlashRatio,
-		"downtimeSlashRatio":    api.eirene.slashingState.DowntimeSlashRatio,
-		"misbehaviorSlashRatio": api.eirene.slashingState.MisbehaviorSlashRatio,
-		"doubleSignJailPeriod":  api.eirene.slashingState.DoubleSignJailPeriod,
-		"downtimeJailPeriod":    api.eirene.slashingState.DowntimeJailPeriod,
-		"misbehaviorJailPeriod": api.eirene.slashingState.MisbehaviorJailPeriod,
-		"downtimeBlocksWindow":  api.eirene.slashingState.DowntimeBlocksWindow,
-		"downtimeThreshold":     api.eirene.slashingState.DowntimeThreshold,
+		"doubleSignSlashRatio":  slashingState.DoubleSignSlashRatio,
+		"downtimeSlashRatio":    slashingState.DowntimeSlashRatio,
+		"misbehaviorSlashRatio": slashingState.MisbehaviorSlashRatio,
+		"doubleSignJailPeriod":  slashingState.DoubleSignJailPeriod,
+		"downtimeJailPeriod":    slashingState.DowntimeJailPeriod,
+		"misbehaviorJailPeriod": slashingState.MisbehaviorJailPeriod,
+		"downtimeBlocksWindow":  slashingState.DowntimeBlocksWindow,
+		"downtimeThreshold":     slashingState.DowntimeThreshold,
 	}
 }
 
@@ -730,71 +734,78 @@ func NewValidatorAPI(chain consensus.ChainHeaderReader, eirene *Eirene) *Validat
 	return &ValidatorAPI{chain: chain, eirene: eirene}
 }
 
-// GetValidators는 현재 활성 검증자 목록을 반환합니다.
+// GetValidators는 모든 검증자 목록을 반환합니다.
 func (api *ValidatorAPI) GetValidators() []*Validator {
-	validators := api.eirene.validatorSet.GetActiveValidators()
-	result := make([]*Validator, len(validators))
-	
-	for i, v := range validators {
-		result[i] = &Validator{
+	// 검증자 목록 가져오기
+	validators := make([]*Validator, 0)
+
+	// 실제 구현에서는 검증자 목록을 가져와야 함
+	// 현재는 임시 구현
+	activeValidators := api.eirene.stakingAdapter.GetActiveValidators()
+	for _, v := range activeValidators {
+		validator := &Validator{
 			Address:     v.GetAddress(),
 			VotingPower: v.GetVotingPower(),
 			Status:      v.GetStatus(),
 		}
+		validators = append(validators, validator)
 	}
-	
-	return result
+
+	return validators
 }
 
-// GetValidator는 특정 주소의 검증자 정보를 반환합니다.
+// GetValidator는 특정 검증자의 정보를 반환합니다.
 func (api *ValidatorAPI) GetValidator(address common.Address) (*Validator, error) {
-	v := api.eirene.validatorSet.GetValidatorByAddress(address)
+	// 검증자 정보 가져오기
+	v := api.eirene.stakingAdapter.GetValidatorByAddress(address)
 	if v == nil {
 		return nil, errors.New("validator not found")
 	}
-	
-	return &Validator{
+
+	// 검증자 정보 생성
+	validator := &Validator{
 		Address:     v.GetAddress(),
 		VotingPower: v.GetVotingPower(),
 		Status:      v.GetStatus(),
-	}, nil
+	}
+
+	return validator, nil
 }
 
-// GetDelegations는 특정 검증자의 위임 정보를 반환합니다.
+// GetDelegations는 검증자에 대한 위임 목록을 반환합니다.
 func (api *ValidatorAPI) GetDelegations(validator common.Address) ([]map[string]interface{}, error) {
-	v := api.eirene.validatorSet.GetValidatorByAddress(validator)
+	// 검증자 확인
+	v := api.eirene.stakingAdapter.GetValidatorByAddress(validator)
 	if v == nil {
 		return nil, errors.New("validator not found")
 	}
-	
-	// 실제 구현에서는 검증자의 위임 정보를 가져와야 합니다.
-	// 여기서는 임시로 빈 배열을 반환합니다.
+
+	// 실제 구현에서는 위임 목록을 가져와야 함
+	// 현재는 임시 구현
 	return []map[string]interface{}{}, nil
 }
 
 // GetDelegation은 특정 위임자의 위임 정보를 반환합니다.
 func (api *ValidatorAPI) GetDelegation(validator common.Address, delegator common.Address) (map[string]interface{}, error) {
-	val := api.eirene.validatorSet.GetValidatorByAddress(validator)
-	if val == nil {
+	// 검증자 확인
+	v := api.eirene.stakingAdapter.GetValidatorByAddress(validator)
+	if v == nil {
 		return nil, errors.New("validator not found")
 	}
 
-	// 실제 구현에서는 위임 정보를 가져와야 합니다.
-	// 여기서는 임시로 빈 맵을 반환합니다.
-	return map[string]interface{}{
-		"validator": validator,
-		"delegator": delegator,
-		"amount": "0",
-		"since": 0,
-	}, nil
+	// 실제 구현에서는 위임 정보를 가져와야 함
+	// 현재는 임시 구현
+	return map[string]interface{}{}, nil
 }
 
 // GetValidatorStats는 검증자 통계를 반환합니다.
 func (api *ValidatorAPI) GetValidatorStats() map[string]interface{} {
 	return map[string]interface{}{
-		"totalValidators":    api.eirene.validatorSet.GetValidatorCount(),
-		"activeValidators":   api.eirene.validatorSet.GetActiveValidatorCount(),
-		"totalStake":         api.eirene.validatorSet.GetTotalStake(),
+		"totalValidators":      api.eirene.stakingAdapter.GetValidatorCount(),
+		"activeValidators":     api.eirene.stakingAdapter.GetActiveValidatorCount(),
+		"totalStake":           api.eirene.stakingAdapter.GetTotalStake(),
+		"averageVotingPower":   big.NewInt(0), // 실제 구현에서는 계산 필요
+		"proposerRotationRate": 0,             // 실제 구현에서는 계산 필요
 	}
 }
 
@@ -811,45 +822,35 @@ func NewRewardAPI(chain consensus.ChainHeaderReader, eirene *Eirene) *RewardAPI 
 
 // GetAccumulatedRewards는 주소의 누적 보상을 반환합니다.
 func (api *RewardAPI) GetAccumulatedRewards(addr common.Address) *hexutil.Big {
-	return (*hexutil.Big)(api.eirene.getAccumulatedRewards(addr))
+	rewards := api.eirene.getAccumulatedRewards(addr)
+	return (*hexutil.Big)(rewards)
 }
 
-// ClaimRewards는 누적된 보상을 청구합니다.
+// ClaimRewards는 보상을 청구합니다.
 func (api *RewardAPI) ClaimRewards(claimer common.Address) (*hexutil.Big, error) {
-	reward, err := api.eirene.claimRewards(claimer)
+	rewards, err := api.eirene.claimRewards(claimer)
 	if err != nil {
 		return nil, err
 	}
-	return (*hexutil.Big)(reward), nil
+	return (*hexutil.Big)(rewards), nil
 }
 
-// GetCommunityFund는 커뮤니티 기금 잔액을 반환합니다.
+// GetCommunityFund는 커뮤니티 기금을 반환합니다.
 func (api *RewardAPI) GetCommunityFund() *hexutil.Big {
-	return (*hexutil.Big)(api.eirene.getCommunityFund())
+	fund := api.eirene.getCommunityFund()
+	return (*hexutil.Big)(fund)
 }
 
-// WithdrawFromCommunityFund는 커뮤니티 기금에서 자금을 인출합니다.
-func (api *RewardAPI) WithdrawFromCommunityFund(recipient common.Address, amount *hexutil.Big) error {
-	return api.eirene.withdrawFromCommunityFund(recipient, (*big.Int)(amount))
-}
-
-// GetRewardStats는 보상 통계 정보를 반환합니다.
+// GetRewardStats는 보상 통계를 반환합니다.
 func (api *RewardAPI) GetRewardStats() map[string]interface{} {
-	stats := make(map[string]interface{})
-
-	// 현재 블록 보상
-	stats["currentBlockReward"] = (*hexutil.Big)(api.eirene.rewardState.CurrentBlockReward)
-
-	// 마지막 보상 감소 블록
-	stats["lastReductionBlock"] = api.eirene.rewardState.LastReductionBlock
-
-	// 총 분배된 보상
-	stats["totalDistributed"] = (*hexutil.Big)(api.eirene.rewardState.TotalDistributed)
-
-	// 커뮤니티 기금 잔액
-	stats["communityFund"] = (*hexutil.Big)(api.eirene.rewardState.CommunityFund)
-
-	return stats
+	// 실제 구현에서는 보상 상태에서 통계를 가져와야 함
+	// 현재는 임시 구현
+	return map[string]interface{}{
+		"totalDistributed": "0",
+		"communityFund":    api.eirene.getCommunityFund().String(),
+		"blockReward":      "0",
+		"lastReduction":    0,
+	}
 }
 
 // IBCAPI는 IBC 관련 API를 제공합니다.
@@ -862,7 +863,7 @@ type IBCAPI struct {
 func (api *IBCAPI) GetClientState(clientID string) (interface{}, error) {
 	// 클라이언트 상태 가져오기
 	// 임시 구현: 실제 구현에서는 api.eirene.ibc.GetClient(clientID)를 사용해야 합니다.
-	
+
 	// 클라이언트 상태 반환
 	return map[string]interface{}{
 		"client_id": clientID,
@@ -875,7 +876,7 @@ func (api *IBCAPI) GetClientState(clientID string) (interface{}, error) {
 func (api *IBCAPI) GetConnection(connectionID string) (interface{}, error) {
 	// 연결 정보 가져오기
 	// 임시 구현: 실제 구현에서는 api.eirene.ibc.GetConnection(connectionID)를 사용해야 합니다.
-	
+
 	// 연결 정보 반환
 	return map[string]interface{}{
 		"connection_id": connectionID,
@@ -887,14 +888,14 @@ func (api *IBCAPI) GetConnection(connectionID string) (interface{}, error) {
 func (api *IBCAPI) GetChannel(portID, channelID string) (interface{}, error) {
 	// 채널 정보 가져오기
 	// 임시 구현: 실제 구현에서는 api.eirene.ibc.GetChannel(portID, channelID)를 사용해야 합니다.
-	
+
 	// 채널 정보 반환
 	return map[string]interface{}{
-		"port_id":              portID,
-		"channel_id":           channelID,
-		"next_sequence_send":   0, // 임시 구현
-		"next_sequence_recv":   0, // 임시 구현
-		"next_sequence_ack":    0, // 임시 구현
+		"port_id":            portID,
+		"channel_id":         channelID,
+		"next_sequence_send": 0, // 임시 구현
+		"next_sequence_recv": 0, // 임시 구현
+		"next_sequence_ack":  0, // 임시 구현
 	}, nil
 }
 
@@ -902,26 +903,26 @@ func (api *IBCAPI) GetChannel(portID, channelID string) (interface{}, error) {
 func (api *IBCAPI) GetPacket(packetID string) (interface{}, error) {
 	// 패킷 정보 가져오기
 	// 임시 구현: 실제 구현에서는 api.eirene.ibc.GetPacket(packetID)를 사용해야 합니다.
-	
+
 	// 패킷 정보 반환
 	return map[string]interface{}{
-		"packet_id":     packetID,
-		"dest_port":     "transfer", // 임시 구현
-		"dest_channel":  "channel-0", // 임시 구현
+		"packet_id":    packetID,
+		"dest_port":    "transfer",  // 임시 구현
+		"dest_channel": "channel-0", // 임시 구현
 	}, nil
 }
 
 // IsValidator는 주어진 주소가 검증자인지 확인합니다.
 func (api *ValidatorAPI) IsValidator(address common.Address) bool {
-	return api.eirene.validatorSet.Contains(address)
+	return api.eirene.stakingAdapter.Contains(address)
 }
 
 // GetValidatorCount는 전체 검증자 수를 반환합니다.
 func (api *ValidatorAPI) GetValidatorCount() int {
-	return api.eirene.validatorSet.GetValidatorCount()
+	return api.eirene.stakingAdapter.GetValidatorCount()
 }
 
 // GetActiveValidatorCount는 활성 검증자 수를 반환합니다.
 func (api *ValidatorAPI) GetActiveValidatorCount() int {
-	return api.eirene.validatorSet.GetActiveValidatorCount()
+	return api.eirene.stakingAdapter.GetActiveValidatorCount()
 }

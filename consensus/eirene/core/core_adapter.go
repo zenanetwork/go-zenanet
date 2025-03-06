@@ -17,9 +17,9 @@
 package core
 
 import (
+	"fmt"
 	"math/big"
 
-	"github.com/pkg/errors"
 	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/consensus"
 	"github.com/zenanetwork/go-zenanet/consensus/eirene/utils"
@@ -33,9 +33,9 @@ import (
 // 이 구조체는 BaseCoreAdapter를 상속하여 확장된 기능을 제공합니다.
 type CoreAdapter struct {
 	*BaseCoreAdapter
-	chain         consensus.ChainHeaderReader
-	currentBlock  func() *types.Block
-	stateAt       func(common.Hash) (*state.StateDB, error)
+	chain        consensus.ChainHeaderReader
+	currentBlock func() *types.Block
+	stateAt      func(common.Hash) (*state.StateDB, error)
 }
 
 // 컴파일 타임에 인터페이스 구현 여부 확인
@@ -52,7 +52,7 @@ func NewCoreAdapter(
 	stateAt func(common.Hash) (*state.StateDB, error),
 ) *CoreAdapter {
 	baseAdapter := NewBaseCoreAdapter(db, validatorSet, governance, config)
-	
+
 	return &CoreAdapter{
 		BaseCoreAdapter: baseAdapter,
 		chain:           chain,
@@ -66,9 +66,9 @@ func (a *CoreAdapter) SubmitProposal(proposer common.Address, title string, desc
 	// 거버넌스 인터페이스가 없는 경우 오류 반환
 	if a.governance == nil {
 		a.logger.Error("governance interface not set")
-		return 0, errors.New("governance interface not set")
+		return 0, utils.ErrInternalError
 	}
-	
+
 	// 제안 내용 생성
 	var content utils.ProposalContentInterface
 	switch proposalType {
@@ -79,7 +79,7 @@ func (a *CoreAdapter) SubmitProposal(proposer common.Address, title string, desc
 	case utils.ProposalTypeUpgrade:
 		if upgrade == nil {
 			a.logger.Error("upgrade info is required for upgrade proposal")
-			return 0, errors.New("upgrade info is required for upgrade proposal")
+			return 0, utils.FormatError(utils.ErrInvalidParameter, "upgrade info is required for upgrade proposal")
 		}
 		content = &upgradeProposal{
 			Info: *upgrade,
@@ -87,7 +87,7 @@ func (a *CoreAdapter) SubmitProposal(proposer common.Address, title string, desc
 	case utils.ProposalTypeFunding:
 		if funding == nil {
 			a.logger.Error("funding info is required for funding proposal")
-			return 0, errors.New("funding info is required for funding proposal")
+			return 0, utils.FormatError(utils.ErrInvalidParameter, "funding info is required for funding proposal")
 		}
 		content = &fundingProposal{
 			Info: *funding,
@@ -95,24 +95,24 @@ func (a *CoreAdapter) SubmitProposal(proposer common.Address, title string, desc
 	case utils.ProposalTypeText:
 		content = &textProposal{}
 	default:
-		a.logger.Error("invalid proposal type")
-		return 0, errors.New("invalid proposal type")
+		a.logger.Error("invalid proposal type", "type", proposalType)
+		return 0, utils.FormatError(utils.ErrInvalidProposalType, "invalid proposal type: %s", proposalType)
 	}
-	
+
 	// 현재 블록 헤더 가져오기
 	header := a.chain.CurrentHeader()
 	if header == nil {
 		a.logger.Error("current header not found")
-		return 0, errors.New("current header not found")
+		return 0, utils.ErrInternalError
 	}
-	
+
 	// 상태 DB 가져오기
 	stateDB, err := a.stateAt(header.Root)
 	if err != nil {
 		a.logger.Error("failed to get state", "error", err)
-		return 0, err
+		return 0, utils.WrapError(err, "failed to get state")
 	}
-	
+
 	// 제안 제출
 	a.logger.Info("Submitting proposal", "proposer", proposer.Hex(), "type", proposalType, "title", title)
 	return a.governance.SubmitProposal(proposer, title, description, proposalType, content, deposit, stateDB)
@@ -123,23 +123,23 @@ func (a *CoreAdapter) ExecuteProposal(proposalID uint64) error {
 	// 거버넌스 인터페이스가 없는 경우 오류 반환
 	if a.governance == nil {
 		a.logger.Error("governance interface not set")
-		return errors.New("governance interface not set")
+		return utils.ErrInternalError
 	}
-	
+
 	// 현재 블록 헤더 가져오기
 	header := a.chain.CurrentHeader()
 	if header == nil {
 		a.logger.Error("current header not found")
-		return errors.New("current header not found")
+		return utils.ErrInternalError
 	}
-	
+
 	// 상태 DB 가져오기
 	stateDB, err := a.stateAt(header.Root)
 	if err != nil {
 		a.logger.Error("failed to get state", "error", err)
-		return err
+		return utils.WrapError(err, "failed to get state")
 	}
-	
+
 	// 제안 실행
 	a.logger.Info("Executing proposal", "id", proposalID)
 	return a.governance.ExecuteProposal(proposalID, stateDB)
@@ -150,26 +150,26 @@ func (a *CoreAdapter) ProcessProposals(currentBlock uint64) error {
 	// 거버넌스 인터페이스가 없는 경우 오류 반환
 	if a.governance == nil {
 		a.logger.Error("governance interface not set")
-		return errors.New("governance interface not set")
+		return utils.ErrInternalError
 	}
-	
+
 	// 현재 블록 헤더 가져오기
 	header := a.chain.CurrentHeader()
 	if header == nil {
 		a.logger.Error("current header not found")
-		return errors.New("current header not found")
+		return utils.ErrInternalError
 	}
-	
+
 	// 상태 DB 가져오기
 	stateDB, err := a.stateAt(header.Root)
 	if err != nil {
 		a.logger.Error("failed to get state", "error", err)
-		return err
+		return utils.WrapError(err, "failed to get state")
 	}
-	
+
 	// 모든 제안 가져오기
 	proposals := a.governance.GetProposals()
-	
+
 	// 각 제안 처리
 	for _, proposal := range proposals {
 		// 투표 기간이 끝난 제안 처리
@@ -178,10 +178,12 @@ func (a *CoreAdapter) ProcessProposals(currentBlock uint64) error {
 			err := a.governance.ExecuteProposal(proposal.GetID(), stateDB)
 			if err != nil {
 				a.logger.Error("Failed to execute proposal", "id", proposal.GetID(), "error", err)
+				// 개별 제안 처리 실패는 전체 프로세스를 중단하지 않음
+				// 로그만 남기고 계속 진행
 			}
 		}
 	}
-	
+
 	return nil
 }
 
@@ -190,18 +192,18 @@ func (a *CoreAdapter) GetVotes(proposalID uint64) ([]ProposalVote, error) {
 	// 거버넌스 인터페이스가 없는 경우 오류 반환
 	if a.governance == nil {
 		a.logger.Error("governance interface not set")
-		return nil, errors.New("governance interface not set")
+		return nil, utils.ErrInternalError
 	}
-	
+
 	// 제안 가져오기
 	proposal, err := a.governance.GetProposal(proposalID)
 	if err != nil {
 		a.logger.Error("failed to get proposal", "id", proposalID, "error", err)
-		return nil, err
+		return nil, utils.WrapError(err, fmt.Sprintf("failed to get proposal %d", proposalID))
 	}
-	
+
 	// 임시 구현: 빈 배열 반환
 	// 실제 구현에서는 제안의 투표 정보를 가져와야 함
 	a.logger.Info("Getting votes for proposal", "id", proposalID, "status", proposal.GetStatus())
 	return []ProposalVote{}, nil
-} 
+}

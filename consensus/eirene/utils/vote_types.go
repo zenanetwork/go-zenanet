@@ -68,8 +68,8 @@ func (v *StandardVote) GetTimestamp() time.Time {
 
 // ConditionalVote는 조건부 투표를 나타냅니다.
 type ConditionalVote struct {
-	StandardVote            // 기본 투표 정보 임베딩
-	Conditions   []string   `json:"conditions"` // 조건 목록
+	StandardVote          // 기본 투표 정보 임베딩
+	Conditions   []string `json:"conditions"` // 조건 목록
 }
 
 // VoteArgs는 투표 API 요청 인자를 나타냅니다.
@@ -96,4 +96,14 @@ func NewConditionalVote(proposalID uint64, voter common.Address, option string, 
 		StandardVote: *NewStandardVote(proposalID, voter, option, weight),
 		Conditions:   conditions,
 	}
-} 
+}
+
+// IsValidVoteOption은 주어진 투표 옵션이 유효한지 확인합니다.
+func IsValidVoteOption(option string) bool {
+	switch option {
+	case VoteOptionYes, VoteOptionNo, VoteOptionAbstain, VoteOptionVeto, VoteWithConditions:
+		return true
+	default:
+		return false
+	}
+}

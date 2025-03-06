@@ -24,53 +24,63 @@ import (
 // 공통 에러 상수 정의
 var (
 	// 일반 에러
-	ErrInvalidParameter     = errors.New("invalid parameter")
-	ErrInternalError        = errors.New("internal error")
-	ErrNotImplemented       = errors.New("not implemented")
-	ErrOperationFailed      = errors.New("operation failed")
-	ErrInsufficientBalance  = errors.New("insufficient balance")
-	ErrInsufficientFunds    = errors.New("insufficient funds")
-	ErrPermissionDenied     = errors.New("permission denied")
-	ErrUnauthorized         = errors.New("unauthorized operation")
-	
+	ErrInvalidParameter    = errors.New("invalid parameter")
+	ErrInternalError       = errors.New("internal error")
+	ErrNotImplemented      = errors.New("not implemented")
+	ErrOperationFailed     = errors.New("operation failed")
+	ErrInsufficientBalance = errors.New("insufficient balance")
+	ErrInsufficientFunds   = errors.New("insufficient funds")
+	ErrPermissionDenied    = errors.New("permission denied")
+	ErrUnauthorized        = errors.New("unauthorized operation")
+
 	// 검증자 관련 에러
-	ErrValidatorNotFound    = errors.New("validator not found")
-	ErrValidatorExists      = errors.New("validator already exists")
-	ErrValidatorJailed      = errors.New("validator is jailed")
+	ErrValidatorNotFound     = errors.New("validator not found")
+	ErrValidatorExists       = errors.New("validator already exists")
+	ErrValidatorJailed       = errors.New("validator is jailed")
 	ErrInvalidValidatorPower = errors.New("invalid validator power")
-	
+
 	// 스테이킹 관련 에러
-	ErrStakingFailed        = errors.New("staking operation failed")
-	ErrDelegationNotFound   = errors.New("delegation not found")
-	ErrInsufficientStake    = errors.New("insufficient stake")
-	ErrInvalidStakeAmount   = errors.New("invalid stake amount")
-	
+	ErrStakingFailed      = errors.New("staking operation failed")
+	ErrDelegationNotFound = errors.New("delegation not found")
+	ErrInsufficientStake  = errors.New("insufficient stake")
+	ErrInvalidStakeAmount = errors.New("invalid stake amount")
+
 	// 거버넌스 관련 에러
-	ErrProposalNotFound       = errors.New("proposal not found")
-	ErrInvalidProposalStatus  = errors.New("invalid proposal status")
-	ErrInvalidProposalType    = errors.New("invalid proposal type")
-	ErrDepositPeriodEnded     = errors.New("deposit period ended")
-	ErrVotingPeriodEnded      = errors.New("voting period ended")
-	ErrDuplicateVote          = errors.New("duplicate vote")
+	ErrProposalNotFound        = errors.New("proposal not found")
+	ErrInvalidProposalStatus   = errors.New("invalid proposal status")
+	ErrInvalidProposalType     = errors.New("invalid proposal type")
+	ErrDepositPeriodEnded      = errors.New("deposit period ended")
+	ErrVotingPeriodEnded       = errors.New("voting period ended")
+	ErrDuplicateVote           = errors.New("duplicate vote")
 	ErrProposalAlreadyExecuted = errors.New("proposal already executed")
-	ErrInvalidVoteOption      = errors.New("invalid vote option")
-	ErrInvalidDeposit         = errors.New("invalid deposit")
-	
+	ErrInvalidVoteOption       = errors.New("invalid vote option")
+	ErrInvalidDeposit          = errors.New("invalid deposit")
+
 	// ABCI 관련 에러
-	ErrInvalidTransaction   = errors.New("invalid transaction")
-	ErrTransactionFailed    = errors.New("transaction execution failed")
-	
+	ErrInvalidTransaction = errors.New("invalid transaction")
+	ErrTransactionFailed  = errors.New("transaction execution failed")
+
 	// P2P 관련 에러
-	ErrPeerNotFound         = errors.New("peer not found")
-	ErrConnectionFailed     = errors.New("connection failed")
-	ErrMessageTooLarge      = errors.New("message too large")
-	ErrInvalidMessage       = errors.New("invalid message")
-	
+	ErrPeerNotFound     = errors.New("peer not found")
+	ErrConnectionFailed = errors.New("connection failed")
+	ErrMessageTooLarge  = errors.New("message too large")
+	ErrInvalidMessage   = errors.New("invalid message")
+
 	// IBC 관련 에러
-	ErrClientNotFound       = errors.New("client not found")
-	ErrConnectionNotFound   = errors.New("connection not found")
-	ErrChannelNotFound      = errors.New("channel not found")
-	ErrInvalidPacket        = errors.New("invalid packet")
+	ErrClientNotFound     = errors.New("client not found")
+	ErrConnectionNotFound = errors.New("connection not found")
+	ErrChannelNotFound    = errors.New("channel not found")
+	ErrInvalidPacket      = errors.New("invalid packet")
+
+	// 성능 최적화 관련 에러
+	ErrWorkerPoolFull        = errors.New("worker pool is full")
+	ErrCacheOverflow         = errors.New("cache overflow")
+	ErrBatchProcessingFailed = errors.New("batch processing failed")
+	ErrTxDependencyCycle     = errors.New("transaction dependency cycle detected")
+	ErrMemoryLimitExceeded   = errors.New("memory limit exceeded")
+	ErrDiskIOFailed          = errors.New("disk I/O operation failed")
+	ErrProfilingFailed       = errors.New("performance profiling failed")
+	ErrAdaptiveScalingFailed = errors.New("adaptive scaling failed")
 )
 
 // FormatError는 에러 메시지를 포맷팅합니다.
@@ -79,7 +89,7 @@ func FormatError(baseErr error, format string, args ...interface{}) error {
 	if baseErr == nil {
 		return fmt.Errorf(format, args...)
 	}
-	
+
 	details := fmt.Sprintf(format, args...)
 	return fmt.Errorf("%s: %w", details, baseErr)
 }
@@ -95,4 +105,4 @@ func WrapError(err error, message string) error {
 // IsErrorType은 주어진 에러가 특정 타입의 에러인지 확인합니다.
 func IsErrorType(err, target error) bool {
 	return errors.Is(err, target)
-} 
+}
