@@ -23,6 +23,7 @@ import (
 
 	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/consensus"
+	"github.com/zenanetwork/go-zenanet/consensus/eirene/utils"
 	"github.com/zenanetwork/go-zenanet/core/state"
 	"github.com/zenanetwork/go-zenanet/core/types"
 	"github.com/zenanetwork/go-zenanet/log"
@@ -73,7 +74,7 @@ type ProposalResponse struct {
 }
 
 // convertProposalToResponse는 제안을 응답 형식으로 변환합니다
-func convertProposalToResponse(proposal *Proposal) ProposalResponse {
+func convertProposalToResponse(proposal *utils.StandardProposal) ProposalResponse {
 	// 보증금 변환
 	deposits := make(map[string]string)
 	for addr, amount := range proposal.Deposits {
@@ -88,33 +89,54 @@ func convertProposalToResponse(proposal *Proposal) ProposalResponse {
 	
 	// 제안 내용 변환
 	var content interface{}
-	switch proposal.Type {
-	case ProposalTypeParameterChange:
-		paramChange := proposal.Content.(ParameterChangeProposal)
-		content = paramChange.Changes
-	case ProposalTypeUpgrade:
-		upgrade := proposal.Content.(UpgradeProposal)
-		content = map[string]interface{}{
-			"name":                 upgrade.Name,
-			"height":               upgrade.Height,
-			"info":                 upgrade.Info,
-			"upgrade_time":         upgrade.UpgradeTime,
-			"cancel_upgrade_height": upgrade.CancelUpgradeHeight,
-		}
-	case ProposalTypeFunding:
-		funding := proposal.Content.(FundingProposal)
-		content = map[string]interface{}{
-			"recipient": funding.Recipient.Hex(),
-			"amount":    funding.Amount.String(),
-			"reason":    funding.Reason,
-		}
-	case ProposalTypeText:
-		text := proposal.Content.(TextProposal)
-		content = map[string]interface{}{
-			"text": text.Text,
+	if proposal.Content != nil {
+		switch proposal.Type {
+		case ProposalTypeParameterChange:
+			if paramChange, ok := proposal.Content.(ParameterChangeProposal); ok {
+				content = paramChange.Changes
+			} else {
+				// 안전한 타입 변환을 위한 추가 처리
+				log.Warn("Failed to convert proposal content to ParameterChangeProposal", "id", proposal.ID)
+			}
+		case ProposalTypeUpgrade:
+			if upgrade, ok := proposal.Content.(UpgradeProposal); ok {
+				content = map[string]interface{}{
+					"name":                 upgrade.Name,
+					"height":               upgrade.Height,
+					"info":                 upgrade.Info,
+					"upgrade_time":         upgrade.UpgradeTime,
+					"cancel_upgrade_height": upgrade.CancelUpgradeHeight,
+				}
+			} else {
+				// 안전한 타입 변환을 위한 추가 처리
+				log.Warn("Failed to convert proposal content to UpgradeProposal", "id", proposal.ID)
+			}
+		case ProposalTypeFunding:
+			if funding, ok := proposal.Content.(FundingProposal); ok {
+				content = map[string]interface{}{
+					"recipient": funding.Recipient.Hex(),
+					"amount":    funding.Amount.String(),
+					"reason":    funding.Reason,
+				}
+			} else {
+				// 안전한 타입 변환을 위한 추가 처리
+				log.Warn("Failed to convert proposal content to FundingProposal", "id", proposal.ID)
+			}
+		case ProposalTypeText:
+			if text, ok := proposal.Content.(TextProposal); ok {
+				content = map[string]interface{}{
+					"text": text.Text,
+				}
+			} else {
+				// 안전한 타입 변환을 위한 추가 처리
+				log.Warn("Failed to convert proposal content to TextProposal", "id", proposal.ID)
+			}
+		default:
+			log.Warn("Unknown proposal type", "type", proposal.Type, "id", proposal.ID)
 		}
 	}
 	
+	// 응답 생성
 	return ProposalResponse{
 		ID:          proposal.ID,
 		Type:        proposal.Type,
@@ -215,7 +237,7 @@ func (api *API) SubmitProposal(args SubmitProposalArgs) (uint64, error) {
 	}
 	
 	// 제안 내용 생성
-	var content ProposalContent
+	var content utils.ProposalContentInterface
 	switch args.Type {
 	case ProposalTypeParameterChange:
 		// 매개변수 변경 제안
@@ -363,10 +385,10 @@ func (api *API) SubmitProposal(args SubmitProposalArgs) (uint64, error) {
 	
 	// 제안 제출
 	proposalID, err := api.governance.SubmitProposal(
-		args.Type,
+		args.Proposer,
 		args.Title,
 		args.Description,
-		args.Proposer,
+		args.Type,
 		content,
 		initialDeposit,
 		state,
@@ -511,6 +533,11 @@ func (api *API) GetParams() map[string]interface{} {
 		"veto_threshold":  params.VetoThreshold,
 		"execution_delay": params.ExecutionDelay,
 	}
+}
+
+// GetGovernanceManager는 거버넌스 매니저를 반환합니다
+func (api *API) GetGovernanceManager() *GovernanceManager {
+	return api.governance
 }
 
 // SetParamsArgs는 거버넌스 매개변수 설정 인자를 나타냅니다

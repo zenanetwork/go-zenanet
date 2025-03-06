@@ -40,17 +40,7 @@ type EireneInterface interface {
 
 // GovAdapter는 Cosmos SDK의 gov 모듈과 go-zenanet의 Eirene 합의 알고리즘을 연결하는 어댑터입니다.
 type GovAdapter struct {
-	eirene             EireneInterface       // Eirene 합의 엔진 인스턴스
-	logger             log.Logger            // 로거
-	db                 ethdb.Database        // 데이터베이스
-	minDeposit         *big.Int              // 최소 제안 보증금
-	maxDepositPeriod   time.Duration         // 최대 보증금 기간
-	votingPeriod       time.Duration         // 투표 기간
-	quorumFloat        float64               // 쿼럼 (투표 참여 최소 비율)
-	thresholdFloat     float64               // 통과 임계값
-	vetoThresholdFloat float64               // 거부권 임계값
-	proposals          map[uint64]*GovProposal // 제안 목록
-	nextProposalID     uint64                // 다음 제안 ID
+	*BaseGovernanceAdapter // 기본 거버넌스 어댑터 상속
 }
 
 // GovProposal은 거버넌스 제안 정보를 나타내는 구조체입니다.
@@ -97,6 +87,8 @@ const (
 )
 
 // GovVote는 투표 정보를 나타내는 구조체입니다.
+// 참고: 이 타입은 utils.StandardVote로 대체되었습니다.
+// 하위 호환성을 위해 유지되며, 내부적으로 utils.StandardVote를 사용합니다.
 type GovVote struct {
 	ProposalID uint64         // 제안 ID
 	Voter      common.Address // 투표자 주소
@@ -104,14 +96,37 @@ type GovVote struct {
 	Timestamp  time.Time      // 투표 시간
 }
 
+// ToStandardVote는 GovVote를 utils.StandardVote로 변환합니다.
+func (v *GovVote) ToStandardVote() *utils.StandardVote {
+	return &utils.StandardVote{
+		ProposalID: v.ProposalID,
+		Voter:      v.Voter,
+		Option:     string(v.Option),
+		Weight:     big.NewInt(1), // 기본 가중치 1
+		Timestamp:  v.Timestamp,
+	}
+}
+
+// FromStandardVote는 utils.StandardVote를 GovVote로 변환합니다.
+func GovVoteFromStandardVote(sv *utils.StandardVote) *GovVote {
+	return &GovVote{
+		ProposalID: sv.ProposalID,
+		Voter:      sv.Voter,
+		Option:     GovVoteOption(sv.Option),
+		Timestamp:  sv.Timestamp,
+	}
+}
+
 // GovVoteOption은 투표 옵션을 나타내는 열거형입니다.
-type GovVoteOption uint8
+// 참고: 이 타입은 string 상수로 대체되었습니다.
+// 하위 호환성을 위해 유지됩니다.
+type GovVoteOption string
 
 const (
-	GovOptionYes GovVoteOption = iota
-	GovOptionNo
-	GovOptionNoWithVeto
-	GovOptionAbstain
+	GovOptionYes        GovVoteOption = "yes"
+	GovOptionNo         GovVoteOption = "no"
+	GovOptionNoWithVeto GovVoteOption = "no_with_veto"
+	GovOptionAbstain    GovVoteOption = "abstain"
 )
 
 // GovDeposit는 보증금 정보를 나타내는 구조체입니다.
@@ -138,195 +153,361 @@ type GovCommunityPoolSpendInfo struct {
 
 // NewGovAdapter는 새로운 GovAdapter 인스턴스를 생성합니다.
 func NewGovAdapter(eirene EireneInterface, db ethdb.Database, config *params.EireneConfig) *GovAdapter {
+	logger := log.New("module", "eirene/gov")
+	baseAdapter := NewBaseGovernanceAdapter(eirene, db, logger)
 	return &GovAdapter{
-		eirene:             eirene,
-		logger:             log.New("module", "eirene/gov"),
-		db:                 db,
-		minDeposit:         new(big.Int).Mul(big.NewInt(100), big.NewInt(1e18)), // 100 토큰
-		maxDepositPeriod:   14 * 24 * time.Hour,                                 // 14일
-		votingPeriod:       14 * 24 * time.Hour,                                 // 14일
-		quorumFloat:        0.334,                                               // 33.4%
-		thresholdFloat:     0.5,                                                 // 50%
-		vetoThresholdFloat: 0.334,                                               // 33.4%
-		proposals:          make(map[uint64]*GovProposal),
-		nextProposalID:     1,
+		BaseGovernanceAdapter: baseAdapter,
 	}
 }
 
-// SubmitProposal은 새로운 제안을 제출합니다.
-func (a *GovAdapter) SubmitProposal(state *state.StateDB, proposer common.Address, title, description string, proposalType GovProposalType, initialDeposit *big.Int, params map[string]string, upgradeInfo *GovUpgradeInfo, communityPoolSpendInfo *GovCommunityPoolSpendInfo) (uint64, error) {
-	// 초기 보증금 확인
-	if initialDeposit.Cmp(big.NewInt(0)) <= 0 {
-		return 0, fmt.Errorf("initial deposit must be positive")
+// SubmitProposal은 새로운 거버넌스 제안을 제출합니다.
+//
+// 매개변수:
+//   - proposer: 제안자 주소
+//   - title: 제안 제목
+//   - description: 제안 설명
+//   - proposalTypeStr: 제안 유형 문자열 (ParameterChange, Upgrade, CommunityPoolSpend, Text)
+//   - content: 제안 내용 인터페이스
+//   - initialDeposit: 초기 보증금
+//   - state: 상태 데이터베이스
+//
+// 반환값:
+//   - uint64: 생성된 제안 ID
+//   - error: 제안 생성 실패 시 오류 반환, 성공 시 nil 반환
+//
+// 이 함수는 새로운 거버넌스 제안을 생성하고 제안 ID를 반환합니다.
+// 제안 유형에 따라 필요한 추가 정보(매개변수 변경, 업그레이드, 커뮤니티 풀 지출 등)를 처리합니다.
+// 초기 보증금이 최소 보증금보다 적을 경우 오류를 반환합니다.
+// 제안이 성공적으로 생성되면 보증금 기간이 시작되고, 충분한 보증금이 모이면 투표 기간으로 전환됩니다.
+func (a *GovAdapter) SubmitProposal(proposer common.Address, title string, description string, proposalTypeStr string, content utils.ProposalContentInterface, initialDeposit *big.Int, state *state.StateDB) (uint64, error) {
+	a.logger.Info("Submitting proposal", "proposer", proposer.Hex(), "title", title)
+
+	// 제안 유형 변환
+	var proposalType GovProposalType
+	switch proposalTypeStr {
+	case "parameter_change":
+		proposalType = GovProposalTypeParameterChange
+	case "software_upgrade":
+		proposalType = GovProposalTypeSoftwareUpgrade
+	case "community_pool_spend":
+		proposalType = GovProposalTypeCommunityPoolSpend
+	case "text":
+		proposalType = GovProposalTypeText
+	default:
+		return 0, utils.WrapError(utils.ErrInvalidParameter, fmt.Sprintf("invalid proposal type: %s", proposalTypeStr))
 	}
 
-	// 계정 잔액 확인
-	balance := state.GetBalance(proposer)
-	if balance.ToBig().Cmp(initialDeposit) < 0 {
-		return 0, fmt.Errorf("insufficient balance for proposal deposit: %s < %s", balance.String(), initialDeposit.String())
+	// 제안 유효성 검사
+	if !a.IsValidProposalType(proposalType) {
+		return 0, utils.WrapError(utils.ErrInvalidParameter, fmt.Sprintf("invalid proposal type: %d", proposalType))
+	}
+
+	if len(title) == 0 {
+		return 0, utils.WrapError(utils.ErrInvalidParameter, "title cannot be empty")
+	}
+
+	if len(description) == 0 {
+		return 0, utils.WrapError(utils.ErrInvalidParameter, "description cannot be empty")
+	}
+
+	// 초기 보증금 검사
+	if initialDeposit == nil {
+		initialDeposit = big.NewInt(0)
+	}
+
+	// 최소 보증금 검사
+	if initialDeposit.Cmp(a.minDeposit) < 0 {
+		return 0, utils.WrapError(utils.ErrInsufficientFunds, fmt.Sprintf("initial deposit %s is less than minimum required %s", initialDeposit.String(), a.minDeposit.String()))
 	}
 
 	// 제안 생성
 	now := time.Now()
 	proposal := &GovProposal{
-		ID:                     a.nextProposalID,
-		Title:                  title,
-		Description:            description,
-		ProposalType:           proposalType,
-		ProposerAddress:        proposer,
-		Status:                 GovProposalStatusDepositPeriod,
-		SubmitTime:             now,
-		DepositEndTime:         now.Add(a.maxDepositPeriod),
-		TotalDeposit:           initialDeposit,
-		Params:                 params,
-		UpgradeInfo:            upgradeInfo,
-		CommunityPoolSpendInfo: communityPoolSpendInfo,
+		ID:              a.nextProposalID,
+		Title:           title,
+		Description:     description,
+		ProposalType:    proposalType,
+		ProposerAddress: proposer,
+		Status:          GovProposalStatusDepositPeriod,
+		SubmitTime:      now,
+		DepositEndTime:  now.Add(a.maxDepositPeriod),
+		TotalDeposit:    initialDeposit,
+		Votes:           make([]*GovVote, 0),
+		Deposits:        make([]*GovDeposit, 0),
 	}
 
-	// 초기 보증금 예치
-	deposit := &GovDeposit{
-		ProposalID: proposal.ID,
-		Depositor:  proposer,
-		Amount:     initialDeposit,
-		Timestamp:  now,
+	// 초기 보증금 추가
+	if initialDeposit.Sign() > 0 {
+		deposit := &GovDeposit{
+			ProposalID: proposal.ID,
+			Depositor:  proposer,
+			Amount:     initialDeposit,
+			Timestamp:  now,
+		}
+		proposal.Deposits = append(proposal.Deposits, deposit)
 	}
-	proposal.Deposits = append(proposal.Deposits, deposit)
+
+	// 제안 유형별 추가 정보 설정
+	switch proposalType {
+	case GovProposalTypeParameterChange:
+		proposal.Params = make(map[string]string)
+		// 매개변수 변경 제안의 경우 content에서 매개변수 정보 추출
+		// 실제 구현에서는 content의 타입을 확인하고 적절히 처리해야 함
+	case GovProposalTypeSoftwareUpgrade:
+		// 업그레이드 제안의 경우 content에서 업그레이드 정보 추출
+		// 실제 구현에서는 content의 타입을 확인하고 적절히 처리해야 함
+	case GovProposalTypeCommunityPoolSpend:
+		// 커뮤니티 풀 지출 제안의 경우 content에서 지출 정보 추출
+		// 실제 구현에서는 content의 타입을 확인하고 적절히 처리해야 함
+	}
 
 	// 제안 저장
 	a.proposals[proposal.ID] = proposal
 	a.nextProposalID++
 
-	// 보증금이 최소 보증금 이상이면 투표 기간으로 전환
-	if proposal.TotalDeposit.Cmp(a.minDeposit) >= 0 {
+	// 초기 보증금이 최소 보증금 이상이면 바로 투표 기간으로 전환
+	if initialDeposit.Cmp(a.minDeposit) >= 0 {
 		a.activateVotingPeriod(proposal)
 	}
 
-	// 토큰 예치 (잔액에서 차감)
-	initialDepositUint256, _ := uint256.FromBig(initialDeposit)
-	state.SubBalance(proposer, initialDepositUint256, tracing.BalanceChangeUnspecified)
-
-	a.logger.Info("New proposal submitted", "id", proposal.ID, "title", proposal.Title, "proposer", proposer.Hex(), "deposit", initialDeposit.String())
-
+	a.logger.Info("Proposal submitted", "id", proposal.ID, "type", proposalType, "proposer", proposer.Hex())
 	return proposal.ID, nil
 }
 
-// Deposit은 제안에 보증금을 예치합니다.
-func (a *GovAdapter) Deposit(state *state.StateDB, depositor common.Address, proposalID uint64, amount *big.Int) error {
-	// 제안 확인
+// Deposit은 제안에 보증금을 추가합니다.
+//
+// 매개변수:
+//   - proposalID: 제안 ID
+//   - depositor: 보증금 예치자 주소
+//   - amount: 보증금 금액
+//
+// 반환값:
+//   - error: 보증금 추가 실패 시 오류 반환, 성공 시 nil 반환
+//
+// 이 함수는 지정된 제안에 보증금을 추가합니다.
+// 제안이 존재하지 않거나 이미 보증금 기간이 종료된 경우 오류를 반환합니다.
+// 보증금이 추가되면 제안의 총 보증금이 업데이트되고, 최소 보증금에 도달하면
+// 제안 상태가 투표 기간으로 전환됩니다.
+// 보증금은 제안이 통과되면 반환되고, 거부되면 커뮤니티 풀로 이동합니다.
+func (a *GovAdapter) Deposit(proposalID uint64, depositor common.Address, amount *big.Int) error {
+	a.logger.Info("Adding deposit", "proposalID", proposalID, "depositor", depositor.Hex())
+
+	// 제안 조회
 	proposal, exists := a.proposals[proposalID]
 	if !exists {
-		return fmt.Errorf("proposal %d not found", proposalID)
+		return utils.WrapError(utils.ErrProposalNotFound, fmt.Sprintf("proposal not found: %d", proposalID))
 	}
 
 	// 제안 상태 확인
 	if proposal.Status != GovProposalStatusDepositPeriod {
-		return fmt.Errorf("proposal %d is not in deposit period", proposalID)
+		return utils.WrapError(utils.ErrInvalidProposalStatus, fmt.Sprintf("proposal is not in deposit period: %d", proposalID))
 	}
 
-	// 계정 잔액 확인
-	balance := state.GetBalance(depositor)
-	if balance.ToBig().Cmp(amount) < 0 {
-		return fmt.Errorf("insufficient balance for deposit: %s < %s", balance.String(), amount.String())
+	// 보증금 마감 시간 확인
+	now := time.Now()
+	if now.After(proposal.DepositEndTime) {
+		return utils.WrapError(utils.ErrDepositPeriodEnded, fmt.Sprintf("deposit period ended: %d", proposalID))
 	}
 
-	// 보증금 예치
+	// 보증금 추가
 	deposit := &GovDeposit{
 		ProposalID: proposalID,
 		Depositor:  depositor,
 		Amount:     amount,
-		Timestamp:  time.Now(),
+		Timestamp:  now,
 	}
 	proposal.Deposits = append(proposal.Deposits, deposit)
 	proposal.TotalDeposit = new(big.Int).Add(proposal.TotalDeposit, amount)
 
-	// 보증금이 최소 보증금 이상이면 투표 기간으로 전환
+	// 최소 보증금 도달 시 투표 기간으로 전환
 	if proposal.TotalDeposit.Cmp(a.minDeposit) >= 0 && proposal.Status == GovProposalStatusDepositPeriod {
 		a.activateVotingPeriod(proposal)
 	}
 
-	// 토큰 예치 (잔액에서 차감)
-	amountUint256, _ := uint256.FromBig(amount)
-	state.SubBalance(depositor, amountUint256, tracing.BalanceChangeUnspecified)
-
-	a.logger.Info("Deposit added to proposal", "id", proposalID, "depositor", depositor.Hex(), "amount", amount.String(), "total", proposal.TotalDeposit.String())
-
+	a.logger.Info("Deposit added to proposal", "id", proposalID, "depositor", depositor.Hex(), "amount", amount)
 	return nil
 }
 
 // Vote는 제안에 투표합니다.
-func (a *GovAdapter) Vote(voter common.Address, proposalID uint64, option GovVoteOption) error {
-	// 제안 확인
+//
+// 매개변수:
+//   - proposalID: 제안 ID
+//   - voter: 투표자 주소
+//   - optionStr: 투표 옵션 문자열 (Yes, No, Abstain, NoWithVeto)
+//
+// 반환값:
+//   - error: 투표 실패 시 오류 반환, 성공 시 nil 반환
+//
+// 이 함수는 지정된 제안에 투표를 추가합니다.
+// 제안이 존재하지 않거나 투표 기간이 아닌 경우 오류를 반환합니다.
+// 투표자가 이미 투표한 경우 기존 투표를 덮어씁니다.
+// 투표 옵션은 Yes(찬성), No(반대), Abstain(기권), NoWithVeto(거부권 행사) 중 하나여야 합니다.
+// 투표는 투표자의 스테이킹 양에 비례하여 가중치가 부여됩니다.
+func (a *GovAdapter) Vote(proposalID uint64, voter common.Address, optionStr string) error {
+	a.logger.Info("Voting on proposal", "proposalID", proposalID, "voter", voter.Hex())
+
+	// 제안 조회
 	proposal, exists := a.proposals[proposalID]
 	if !exists {
-		return fmt.Errorf("proposal %d not found", proposalID)
+		return utils.WrapError(utils.ErrProposalNotFound, fmt.Sprintf("proposal not found: %d", proposalID))
 	}
 
 	// 제안 상태 확인
 	if proposal.Status != GovProposalStatusVotingPeriod {
-		return fmt.Errorf("proposal %d is not in voting period", proposalID)
+		return utils.WrapError(utils.ErrInvalidProposalStatus, fmt.Sprintf("proposal is not in voting period: %d", proposalID))
 	}
 
-	// 이미 투표했는지 확인
-	for _, v := range proposal.Votes {
-		if v.Voter == voter {
-			return fmt.Errorf("voter %s has already voted on proposal %d", voter.Hex(), proposalID)
+	// 투표 마감 시간 확인
+	now := time.Now()
+	if now.After(proposal.VotingEndTime) {
+		return utils.WrapError(utils.ErrVotingPeriodEnded, fmt.Sprintf("voting period ended: %d", proposalID))
+	}
+
+	// 투표 옵션 변환
+	var option GovVoteOption
+	switch optionStr {
+	case "yes":
+		option = GovOptionYes
+	case "no":
+		option = GovOptionNo
+	case "no_with_veto":
+		option = GovOptionNoWithVeto
+	case "abstain":
+		option = GovOptionAbstain
+	default:
+		return utils.WrapError(utils.ErrInvalidParameter, fmt.Sprintf("invalid vote option: %s", optionStr))
+	}
+
+	// 중복 투표 확인
+	for _, vote := range proposal.Votes {
+		if vote.Voter == voter {
+			return utils.WrapError(utils.ErrDuplicateVote, fmt.Sprintf("voter already voted: %s", voter.Hex()))
 		}
 	}
 
-	// 투표 생성
+	// 투표 추가
 	vote := &GovVote{
 		ProposalID: proposalID,
 		Voter:      voter,
 		Option:     option,
-		Timestamp:  time.Now(),
+		Timestamp:  now,
 	}
 	proposal.Votes = append(proposal.Votes, vote)
 
 	a.logger.Info("Vote cast", "id", proposalID, "voter", voter.Hex(), "option", option)
-
 	return nil
 }
 
-// ProcessProposals는 모든 활성 제안을 처리합니다.
-func (a *GovAdapter) ProcessProposals(state *state.StateDB, blockTime time.Time, blockHeight uint64) error {
+// ExecuteProposal은 통과된 제안을 실행합니다.
+//
+// 매개변수:
+//   - proposalID: 제안 ID
+//   - state: 상태 데이터베이스
+//
+// 반환값:
+//   - error: 제안 실행 실패 시 오류 반환, 성공 시 nil 반환
+//
+// 이 함수는 통과된 제안을 실행합니다.
+// 제안이 존재하지 않거나 통과 상태가 아닌 경우 오류를 반환합니다.
+// 제안 유형에 따라 다른 실행 로직이 적용됩니다:
+//   - 매개변수 변경: 시스템 매개변수를 업데이트합니다.
+//   - 소프트웨어 업그레이드: 지정된 블록 높이에서 업그레이드를 예약합니다.
+//   - 커뮤니티 풀 지출: 커뮤니티 풀에서 지정된 수령인에게 자금을 전송합니다.
+//   - 텍스트 제안: 실행 로직이 없으며 단순히 상태만 업데이트합니다.
+// 제안이 성공적으로 실행되면 상태가 'Executed'로 변경됩니다.
+func (a *GovAdapter) ExecuteProposal(proposalID uint64, state *state.StateDB) error {
+	a.logger.Info("Executing proposal", "proposalID", proposalID)
+
+	// 제안 조회
+	proposal, exists := a.proposals[proposalID]
+	if !exists {
+		return utils.WrapError(utils.ErrProposalNotFound, fmt.Sprintf("proposal not found: %d", proposalID))
+	}
+
+	// 제안 상태 확인
+	if proposal.Status != GovProposalStatusPassed {
+		return utils.WrapError(utils.ErrInvalidProposalStatus, fmt.Sprintf("proposal is not passed: %d", proposalID))
+	}
+
+	// 제안 유형별 실행
+	var err error
+	switch proposal.ProposalType {
+	case GovProposalTypeParameterChange:
+		err = a.executeParameterChangeProposal(proposal)
+	case GovProposalTypeSoftwareUpgrade:
+		// 소프트웨어 업그레이드 제안은 ProcessProposals에서 처리
+		err = nil
+	case GovProposalTypeCommunityPoolSpend:
+		err = a.executeCommunityPoolSpendProposal(state, proposal)
+	case GovProposalTypeText:
+		// 텍스트 제안은 실행할 내용이 없음
+		err = nil
+	default:
+		err = utils.WrapError(utils.ErrInvalidParameter, fmt.Sprintf("invalid proposal type: %d", proposal.ProposalType))
+	}
+
+	if err != nil {
+		proposal.Status = GovProposalStatusFailed
+		a.logger.Error("Proposal execution failed", "id", proposalID, "error", err)
+		return err
+	}
+
+	// 제안 상태 업데이트
+	proposal.Status = GovProposalStatusExecuted
+	proposal.ExecutionTime = time.Now()
+
+	a.logger.Info("Proposal executed", "id", proposalID)
+	return nil
+}
+
+// ProcessProposals는 현재 블록 높이에서 모든 활성 제안을 처리합니다.
+//
+// 매개변수:
+//   - blockHeight: 현재 블록 높이
+//   - state: 상태 데이터베이스
+//
+// 반환값:
+//   - error: 처리 실패 시 오류 반환, 성공 시 nil 반환
+//
+// 이 함수는 각 블록 처리 시 호출되어 모든 활성 제안의 상태를 업데이트합니다.
+// 다음과 같은 작업을 수행합니다:
+//   - 보증금 기간이 종료된 제안을 처리합니다. 최소 보증금에 도달하지 못한 제안은 거부됩니다.
+//   - 투표 기간이 종료된 제안을 처리합니다. 투표 결과에 따라 제안이 통과되거나 거부됩니다.
+//   - 통과된 제안을 실행합니다.
+// 이 함수는 블록체인의 거버넌스 상태를 최신 상태로 유지하는 데 중요합니다.
+func (a *GovAdapter) ProcessProposals(blockHeight uint64, state *state.StateDB) error {
+	a.logger.Debug("Processing proposals", "blockHeight", blockHeight)
+
+	now := time.Now()
+
+	// 모든 제안 처리
 	for _, proposal := range a.proposals {
 		// 보증금 기간 종료 확인
-		if proposal.Status == GovProposalStatusDepositPeriod && blockTime.After(proposal.DepositEndTime) {
+		if proposal.Status == GovProposalStatusDepositPeriod && now.After(proposal.DepositEndTime) {
+			// 최소 보증금 미달 시 제안 거부
 			if proposal.TotalDeposit.Cmp(a.minDeposit) < 0 {
-				// 최소 보증금을 모으지 못한 경우 제안 실패
-				proposal.Status = GovProposalStatusFailed
-				a.refundDeposits(state, proposal)
-				a.logger.Info("Proposal failed due to insufficient deposit", "id", proposal.ID)
-			} else {
-				// 투표 기간으로 전환
-				a.activateVotingPeriod(proposal)
+				proposal.Status = GovProposalStatusRejected
+				a.logger.Info("Proposal rejected due to insufficient deposit", "id", proposal.ID)
 			}
 		}
 
 		// 투표 기간 종료 확인
-		if proposal.Status == GovProposalStatusVotingPeriod && blockTime.After(proposal.VotingEndTime) {
-			// 투표 결과 계산
-			result := a.tallyVotes(proposal)
-			if result {
+		if proposal.Status == GovProposalStatusVotingPeriod && now.After(proposal.VotingEndTime) {
+			// 투표 집계
+			if a.tallyVotes(proposal) {
 				proposal.Status = GovProposalStatusPassed
-				proposal.ExecutionTime = blockTime.Add(24 * time.Hour) // 24시간 후 실행
 				a.logger.Info("Proposal passed", "id", proposal.ID)
 			} else {
 				proposal.Status = GovProposalStatusRejected
-				a.refundDeposits(state, proposal)
 				a.logger.Info("Proposal rejected", "id", proposal.ID)
 			}
 		}
 
-		// 통과된 제안 실행
-		if proposal.Status == GovProposalStatusPassed && blockTime.After(proposal.ExecutionTime) {
-			if err := a.executeProposal(state, proposal, blockHeight); err != nil {
-				a.logger.Error("Failed to execute proposal", "id", proposal.ID, "error", err)
-				proposal.Status = GovProposalStatusFailed
-				a.refundDeposits(state, proposal)
-			} else {
-				proposal.Status = GovProposalStatusExecuted
-				a.logger.Info("Proposal executed", "id", proposal.ID)
+		// 통과된 소프트웨어 업그레이드 제안 처리
+		if proposal.Status == GovProposalStatusPassed && proposal.ProposalType == GovProposalTypeSoftwareUpgrade {
+			err := a.executeSoftwareUpgradeProposal(proposal, blockHeight)
+			if err != nil {
+				a.logger.Error("Software upgrade proposal execution failed", "id", proposal.ID, "error", err)
 			}
 		}
 	}
@@ -343,7 +524,20 @@ func (a *GovAdapter) activateVotingPeriod(proposal *GovProposal) {
 	a.logger.Info("Proposal entered voting period", "id", proposal.ID, "end", proposal.VotingEndTime)
 }
 
-// tallyVotes는 제안에 대한 투표를 집계하고 통과 여부를 반환합니다.
+// tallyVotes는 제안의 투표를 집계하고 통과 여부를 결정합니다.
+//
+// 매개변수:
+//   - proposal: 집계할 제안
+//
+// 반환값:
+//   - bool: 제안 통과 여부 (true: 통과, false: 거부)
+//
+// 이 함수는 제안의 모든 투표를 집계하고 통과 여부를 결정합니다.
+// 투표는 다음과 같은 규칙에 따라 집계됩니다:
+//   - 총 투표율이 정족수(quorum)에 도달해야 합니다.
+//   - 거부권(veto) 투표가 거부권 임계값을 초과하면 제안은 거부됩니다.
+//   - 기권(abstain) 투표를 제외한 찬성(yes) 투표가 임계값을 초과해야 합니다.
+// 투표 결과에 따라 제안 상태가 'Passed' 또는 'Rejected'로 업데이트됩니다.
 func (a *GovAdapter) tallyVotes(proposal *GovProposal) bool {
 	// 투표 수 집계
 	totalVotes := big.NewInt(0)
@@ -426,23 +620,6 @@ func (a *GovAdapter) tallyVotes(proposal *GovProposal) bool {
 	return false
 }
 
-// executeProposal은 통과된 제안을 실행합니다.
-func (a *GovAdapter) executeProposal(state *state.StateDB, proposal *GovProposal, blockHeight uint64) error {
-	switch proposal.ProposalType {
-	case GovProposalTypeParameterChange:
-		return a.executeParameterChangeProposal(proposal)
-	case GovProposalTypeSoftwareUpgrade:
-		return a.executeSoftwareUpgradeProposal(proposal, blockHeight)
-	case GovProposalTypeCommunityPoolSpend:
-		return a.executeCommunityPoolSpendProposal(state, proposal)
-	case GovProposalTypeText:
-		// 텍스트 제안은 실행할 내용이 없음
-		return nil
-	default:
-		return fmt.Errorf("unknown proposal type: %d", proposal.ProposalType)
-	}
-}
-
 // executeParameterChangeProposal은 매개변수 변경 제안을 실행합니다.
 func (a *GovAdapter) executeParameterChangeProposal(proposal *GovProposal) error {
 	// 매개변수 변경 로직 구현
@@ -497,15 +674,6 @@ func (a *GovAdapter) executeCommunityPoolSpendProposal(state *state.StateDB, pro
 
 	a.logger.Info("Community pool spend executed", "recipient", proposal.CommunityPoolSpendInfo.Recipient.Hex(), "amount", proposal.CommunityPoolSpendInfo.Amount.String())
 	return nil
-}
-
-// refundDeposits는 제안의 보증금을 환불합니다.
-func (a *GovAdapter) refundDeposits(state *state.StateDB, proposal *GovProposal) {
-	for _, deposit := range proposal.Deposits {
-		amountUint256, _ := uint256.FromBig(deposit.Amount)
-		state.AddBalance(deposit.Depositor, amountUint256, tracing.BalanceChangeUnspecified)
-		a.logger.Info("Deposit refunded", "id", proposal.ID, "depositor", deposit.Depositor.Hex(), "amount", deposit.Amount.String())
-	}
 }
 
 // GetProposal은 제안 정보를 반환합니다.

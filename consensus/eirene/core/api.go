@@ -22,8 +22,6 @@ package core
 import (
 	"errors"
 	"math/big"
-	"strconv"
-	"time"
 
 	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/common/hexutil"
@@ -492,6 +490,35 @@ func (api *API) GetValidatorStats(number *rpc.BlockNumber) (map[string]interface
 	return stats, nil
 }
 
+// Proposal은 거버넌스 제안을 나타냅니다.
+type Proposal struct {
+	ID               uint64         `json:"id"`
+	Title            string         `json:"title"`
+	Description      string         `json:"description"`
+	Type             string         `json:"type"`
+	Status           string         `json:"status"`
+	Proposer         common.Address `json:"proposer"`
+	VotingStartBlock uint64         `json:"votingStartBlock"`
+	VotingEndBlock   uint64         `json:"votingEndBlock"`
+	Parameters       map[string]string `json:"parameters,omitempty"`
+	Deposit          *big.Int       `json:"deposit"`
+	TotalVotes       *big.Int       `json:"totalVotes"`
+}
+
+// UpgradeInfo는 업그레이드 제안에 대한 정보를 나타냅니다.
+type UpgradeInfo struct {
+	Version     string `json:"version"`
+	Height      uint64 `json:"height"`
+	Description string `json:"description"`
+}
+
+// FundingInfo는 커뮤니티 펀드 지출 제안에 대한 정보를 나타냅니다.
+type FundingInfo struct {
+	Recipient common.Address `json:"recipient"`
+	Amount    *big.Int       `json:"amount"`
+	Reason    string         `json:"reason"`
+}
+
 // GovernanceAPI는 Eirene 거버넌스 시스템의 공개 API를 제공합니다.
 type GovernanceAPI struct {
 	chain  consensus.ChainHeaderReader
@@ -825,241 +852,63 @@ func (api *RewardAPI) GetRewardStats() map[string]interface{} {
 	return stats
 }
 
-// IBCAPI는 Eirene IBC 시스템의 공개 API를 제공합니다.
+// IBCAPI는 IBC 관련 API를 제공합니다.
 type IBCAPI struct {
-	chain  consensus.ChainHeaderReader
 	eirene *Eirene
+	chain  BlockChain
 }
 
-// NewIBCAPI는 새로운 IBC API 인스턴스를 생성합니다.
-func NewIBCAPI(chain consensus.ChainHeaderReader, eirene *Eirene) *IBCAPI {
-	return &IBCAPI{chain: chain, eirene: eirene}
-}
-
-// CreateClient는 새로운 IBC 클라이언트를 생성합니다.
-func (api *IBCAPI) CreateClient(id string, clientType string, consensusState []byte, trustingPeriod uint64) error {
-	_, err := api.eirene.ibcState.createClient(id, clientType, consensusState, trustingPeriod)
-	if err != nil {
-		return err
-	}
-
-	// IBC 상태 저장
-	if err := api.eirene.ibcState.store(api.eirene.db); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// UpdateClient는 IBC 클라이언트를 업데이트합니다.
-func (api *IBCAPI) UpdateClient(id string, height uint64, consensusState []byte) error {
-	err := api.eirene.ibcState.updateClient(id, height, consensusState)
-	if err != nil {
-		return err
-	}
-
-	// IBC 상태 저장
-	if err := api.eirene.ibcState.store(api.eirene.db); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// CreateConnection은 새로운 IBC 연결을 생성합니다.
-func (api *IBCAPI) CreateConnection(id string, clientID string, counterpartyClientID string, counterpartyConnectionID string, version string) error {
-	_, err := api.eirene.ibcState.createConnection(id, clientID, counterpartyClientID, counterpartyConnectionID, version)
-	if err != nil {
-		return err
-	}
-
-	// IBC 상태 저장
-	if err := api.eirene.ibcState.store(api.eirene.db); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// OpenConnection은 IBC 연결을 엽니다.
-func (api *IBCAPI) OpenConnection(id string) error {
-	err := api.eirene.ibcState.openConnection(id)
-	if err != nil {
-		return err
-	}
-
-	// IBC 상태 저장
-	if err := api.eirene.ibcState.store(api.eirene.db); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// CreateChannel은 새로운 IBC 채널을 생성합니다.
-func (api *IBCAPI) CreateChannel(portID string, channelID string, connectionID string, counterpartyPortID string, counterpartyChannelID string, version string) error {
-	_, err := api.eirene.ibcState.createChannel(portID, channelID, connectionID, counterpartyPortID, counterpartyChannelID, version)
-	if err != nil {
-		return err
-	}
-
-	// IBC 상태 저장
-	if err := api.eirene.ibcState.store(api.eirene.db); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// OpenChannel은 IBC 채널을 엽니다.
-func (api *IBCAPI) OpenChannel(portID string, channelID string) error {
-	err := api.eirene.ibcState.openChannel(portID, channelID)
-	if err != nil {
-		return err
-	}
-
-	// IBC 상태 저장
-	if err := api.eirene.ibcState.store(api.eirene.db); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// CloseChannel은 IBC 채널을 닫습니다.
-func (api *IBCAPI) CloseChannel(portID string, channelID string) error {
-	err := api.eirene.ibcState.closeChannel(portID, channelID)
-	if err != nil {
-		return err
-	}
-
-	// IBC 상태 저장
-	if err := api.eirene.ibcState.store(api.eirene.db); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// TransferToken은 IBC를 통해 토큰을 전송합니다.
-func (api *IBCAPI) TransferToken(sourcePort string, sourceChannel string, token common.Address, amount *hexutil.Big, sender common.Address, receiver string) error {
-	// 현재 블록 번호 가져오기
-	currentBlock := api.chain.CurrentHeader().Number.Uint64()
-
-	// 타임아웃 계산
-	timeoutHeight := currentBlock + IBCDefaultTimeoutPeriod
-	timeoutTimestamp := uint64(time.Now().Unix()) + IBCDefaultTimeoutPeriod*15 // 15초 블록 기준
-
-	// 토큰 전송
-	_, err := api.eirene.transferToken(
-		sourcePort,
-		sourceChannel,
-		token,
-		(*big.Int)(amount),
-		sender,
-		receiver,
-		timeoutHeight,
-		timeoutTimestamp,
-	)
-
-	return err
-}
-
-// GetClients는 IBC 클라이언트 목록을 반환합니다.
-func (api *IBCAPI) GetClients() map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for id, client := range api.eirene.ibcState.Clients {
-		clientInfo := map[string]interface{}{
-			"id":             id,
-			"type":           client.Type,
-			"state":          client.GetState(),
-			"latestHeight":   client.GetLatestHeight(),
-			"trustingPeriod": client.TrustingPeriod,
-		}
-
-		result[id] = clientInfo
-	}
-
-	return result
-}
-
-// GetConnections는 IBC 연결 목록을 반환합니다.
-func (api *IBCAPI) GetConnections() map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for id, connection := range api.eirene.ibcState.Connections {
-		connectionInfo := map[string]interface{}{
-			"id":                       id,
-			"clientId":                 connection.ClientID,
-			"counterpartyClientId":     connection.CounterpartyClientID,
-			"counterpartyConnectionId": connection.CounterpartyConnectionID,
-			"state":                    connection.State,
-			"versions":                 connection.GetVersions(),
-		}
-
-		result[id] = connectionInfo
-	}
-
-	return result
-}
-
-// GetChannels는 IBC 채널 목록을 반환합니다.
-func (api *IBCAPI) GetChannels() map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for key, channel := range api.eirene.ibcState.Channels {
-		channelInfo := map[string]interface{}{
-			"portId":                channel.PortID,
-			"channelId":             channel.ChannelID,
-			"counterpartyPortId":    channel.CounterpartyPortID,
-			"counterpartyChannelId": channel.CounterpartyChannelID,
-			"state":                 channel.State,
-			"version":               channel.Version,
-			"connectionId":          channel.ConnectionID,
-			"nextSequenceSend":      channel.GetNextSequenceSend(),
-			"nextSequenceRecv":      channel.GetNextSequenceRecv(),
-			"nextSequenceAck":       channel.GetNextSequenceAck(),
-		}
-
-		result[key] = channelInfo
-	}
-
-	return result
-}
-
-// GetPackets는 IBC 패킷 목록을 반환합니다.
-func (api *IBCAPI) GetPackets() map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for sequence, packet := range api.eirene.ibcState.Packets {
-		packetInfo := map[string]interface{}{
-			"sequence":         packet.Sequence,
-			"sourcePort":       packet.SourcePort,
-			"sourceChannel":    packet.SourceChannel,
-			"destPort":         packet.GetDestPort(),
-			"destChannel":      packet.GetDestChannel(),
-			"timeoutHeight":    packet.TimeoutHeight,
-			"timeoutTimestamp": packet.TimeoutTimestamp,
-		}
-
-		result[strconv.FormatUint(sequence, 10)] = packetInfo
-	}
-
-	return result
-}
-
-// GetIBCStats는 IBC 통계 정보를 반환합니다.
-func (api *IBCAPI) GetIBCStats() map[string]interface{} {
+// GetClientState는 IBC 클라이언트 상태를 반환합니다.
+func (api *IBCAPI) GetClientState(clientID string) (interface{}, error) {
+	// 클라이언트 상태 가져오기
+	// 임시 구현: 실제 구현에서는 api.eirene.ibc.GetClient(clientID)를 사용해야 합니다.
+	
+	// 클라이언트 상태 반환
 	return map[string]interface{}{
-		"totalPacketsSent":         api.eirene.ibcState.TotalPacketsSent,
-		"totalPacketsReceived":     api.eirene.ibcState.TotalPacketsReceived,
-		"totalPacketsAcknowledged": api.eirene.ibcState.TotalPacketsAcknowledged,
-		"totalPacketsTimedOut":     api.eirene.ibcState.TotalPacketsTimedOut,
-		"totalClients":             len(api.eirene.ibcState.Clients),
-		"totalConnections":         len(api.eirene.ibcState.Connections),
-		"totalChannels":            len(api.eirene.ibcState.Channels),
-	}
+		"client_id": clientID,
+		"state":     "active", // 임시 구현
+		"height":    0,        // 임시 구현
+	}, nil
+}
+
+// GetConnection은 IBC 연결 정보를 반환합니다.
+func (api *IBCAPI) GetConnection(connectionID string) (interface{}, error) {
+	// 연결 정보 가져오기
+	// 임시 구현: 실제 구현에서는 api.eirene.ibc.GetConnection(connectionID)를 사용해야 합니다.
+	
+	// 연결 정보 반환
+	return map[string]interface{}{
+		"connection_id": connectionID,
+		"versions":      []string{"1.0"}, // 임시 구현
+	}, nil
+}
+
+// GetChannel은 IBC 채널 정보를 반환합니다.
+func (api *IBCAPI) GetChannel(portID, channelID string) (interface{}, error) {
+	// 채널 정보 가져오기
+	// 임시 구현: 실제 구현에서는 api.eirene.ibc.GetChannel(portID, channelID)를 사용해야 합니다.
+	
+	// 채널 정보 반환
+	return map[string]interface{}{
+		"port_id":              portID,
+		"channel_id":           channelID,
+		"next_sequence_send":   0, // 임시 구현
+		"next_sequence_recv":   0, // 임시 구현
+		"next_sequence_ack":    0, // 임시 구현
+	}, nil
+}
+
+// GetPacket은 IBC 패킷 정보를 반환합니다.
+func (api *IBCAPI) GetPacket(packetID string) (interface{}, error) {
+	// 패킷 정보 가져오기
+	// 임시 구현: 실제 구현에서는 api.eirene.ibc.GetPacket(packetID)를 사용해야 합니다.
+	
+	// 패킷 정보 반환
+	return map[string]interface{}{
+		"packet_id":     packetID,
+		"dest_port":     "transfer", // 임시 구현
+		"dest_channel":  "channel-0", // 임시 구현
+	}, nil
 }
 
 // IsValidator는 주어진 주소가 검증자인지 확인합니다.

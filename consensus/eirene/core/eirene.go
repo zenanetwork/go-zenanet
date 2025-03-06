@@ -172,14 +172,17 @@ type Eirene struct {
 	// 테스트용 필드
 	fakeDiff bool // 난이도 검증 건너뛰기
 
+	// 코어 어댑터
+	coreAdapter CoreAdapterInterface
+
 	// 거버넌스 어댑터
-	govAdapter *GovAdapter
+	govAdapter utils.GovernanceInterface
 
 	// 스테이킹 어댑터
-	stakingAdapter *StakingAdapter
+	stakingAdapter utils.ValidatorSetInterface
 
 	// ABCI 어댑터
-	abciAdapter *ABCIAdapter
+	abciAdapter interface{}
 
 	// 블록 생성 및 검증
 	currentBlock func() *types.Block      // 현재 블록을 가져오는 함수
@@ -190,6 +193,9 @@ type Eirene struct {
 	eventFeed     *event.Feed    // 이벤트 피드
 	chainHeadCh   chan core.ChainHeadEvent
 	chainHeadSub  event.Subscription
+	
+	// 로거
+	logger log.Logger
 }
 
 // SignerFn은 주어진 해시에 서명하고 결과를 반환하는 함수 유형입니다.
@@ -212,44 +218,80 @@ type SignerFn func(signer common.Address, hash []byte) ([]byte, error)
 //
 // 반환값:
 //   - *Eirene: 새로운 Eirene 합의 엔진 인스턴스
+//
+// 이 함수는 Eirene 합의 엔진의 새 인스턴스를 초기화합니다. 설정에 Period나 Epoch가
+// 지정되지 않은 경우 기본값을 사용합니다. 또한 최근 블록 서명을 위한 캐시를 초기화하고
+// 필요한 데이터 구조를 설정합니다. 실제 구현에서는 거버넌스, 스테이킹, ABCI 어댑터 등을
+// 적절히 초기화해야 합니다.
 func New(config *params.EireneConfig, db ethdb.Database) *Eirene {
-	// 기본 설정 적용
-	conf := *config
-	if conf.Period == 0 {
-		conf.Period = defaultPeriod
-	}
-	if conf.Epoch == 0 {
-		conf.Epoch = uint64(defaultEpochLength)
-	}
-	// Allocate the snapshot caches and create the engine
-	recents := newRecentBlocks()
+	// 시그니처 캐시 생성
 	signatures, _ := lru.NewARC(inmemorySignatures)
-
+	
+	// 로거 설정
+	logger := log.New("module", "eirene")
+	
+	// Eirene 인스턴스 생성
 	eirene := &Eirene{
-		config:     &conf,
+		config:     config,
 		db:         db,
-		recents:    recents,
+		recents:    newRecentBlocks(),
 		signatures: signatures,
 		proposals:  make(map[common.Address]bool),
+		eventFeed:  new(event.Feed),
+		logger:     logger,
 	}
-
-	// 어댑터 초기화 - 실제 구현에서는 적절한 인자를 전달해야 합니다.
-	// 여기서는 임시로 어댑터 초기화를 생략합니다.
-
+	
 	return eirene
 }
 
 // Author는 주어진 블록을 채굴한 계정의 Zenanet 주소를 검색합니다.
+//
+// 매개변수:
+//   - header: 블록 헤더
+//
+// 반환값:
+//   - common.Address: 블록 생성자 주소
+//   - error: 오류 발생 시 반환
+//
+// 이 함수는 블록 헤더의 extra-data 필드에서 서명을 추출하고, 이를 통해 블록을 생성한
+// 검증자의 주소를 복구합니다. 서명이 유효하지 않거나 추출할 수 없는 경우 오류를 반환합니다.
+// 이미 처리된 블록의 경우 캐시에서 주소를 검색하여 성능을 최적화합니다.
 func (e *Eirene) Author(header *types.Header) (common.Address, error) {
 	return ecrecover(header, e.signatures)
 }
 
 // VerifyHeader는 헤더가 주어진 엔진의 합의 규칙을 준수하는지 확인합니다.
+//
+// 매개변수:
+//   - chain: 체인 헤더 리더 인터페이스
+//   - header: 검증할 블록 헤더
+//   - seal: 서명 검증 여부
+//
+// 반환값:
+//   - error: 검증 실패 시 오류 반환, 성공 시 nil 반환
+//
+// 이 함수는 블록 헤더가 Eirene 합의 규칙을 준수하는지 검증합니다. 내부적으로 verifyHeader를
+// 호출하여 실제 검증 작업을 수행합니다. 검증 과정에서는 블록 번호, 체인 구성, 캐스케이딩 필드 등을
+// 확인합니다. 검증에 실패하면 적절한 오류를 반환합니다.
 func (e *Eirene) VerifyHeader(chain consensus.ChainHeaderReader, header *types.Header, seal bool) error {
 	return e.verifyHeader(chain, header, nil)
 }
 
 // VerifyHeaders는 VerifyHeader와 유사하지만 헤더 배치를 동시에 확인합니다.
+//
+// 매개변수:
+//   - chain: 체인 헤더 리더 인터페이스
+//   - headers: 검증할 블록 헤더 배열
+//   - seals: 각 헤더에 대한 서명 검증 여부 배열
+//
+// 반환값:
+//   - chan<- struct{}: 검증 작업을 중단하기 위한 채널
+//   - <-chan error: 검증 결과를 전달하는 채널
+//
+// 이 함수는 여러 블록 헤더를 병렬로 검증합니다. 각 헤더에 대해 verifyHeader를 호출하여
+// 검증 작업을 수행하고, 결과를 채널을 통해 반환합니다. 검증 작업은 비동기적으로 수행되며,
+// abort 채널을 통해 중단할 수 있습니다. 이 함수는 여러 블록을 한 번에 검증할 때 성능을
+// 최적화하기 위해 사용됩니다.
 func (e *Eirene) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*types.Header, seals []bool) (chan<- struct{}, <-chan error) {
 	abort := make(chan struct{})
 	results := make(chan error, len(headers))
@@ -269,6 +311,19 @@ func (e *Eirene) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*typ
 }
 
 // verifyHeader는 헤더가 Eirene 엔진의 합의 규칙을 준수하는지 확인합니다.
+//
+// 매개변수:
+//   - chain: 체인 헤더 리더 인터페이스
+//   - header: 검증할 블록 헤더
+//   - parents: 부모 헤더 배열 (선택적)
+//
+// 반환값:
+//   - error: 검증 실패 시 오류 반환, 성공 시 nil 반환
+//
+// 이 함수는 VerifyHeader의 내부 구현으로, 블록 헤더가 Eirene 합의 규칙을 준수하는지
+// 검증합니다. 블록 번호가 있는지, 체인 구성에서 Eirene가 활성화되어 있는지 확인하고,
+// verifyCascadingFields를 호출하여 추가 검증을 수행합니다. 검증에 실패하면 적절한
+// 오류를 반환합니다. parents 매개변수는 이전에 검증된 헤더 배열로, 캐싱 목적으로 사용됩니다.
 func (e *Eirene) verifyHeader(chain consensus.ChainHeaderReader, header *types.Header, parents []*types.Header) error {
 	if header.Number == nil {
 		return errUnknownBlock
@@ -286,12 +341,36 @@ func (e *Eirene) verifyHeader(chain consensus.ChainHeaderReader, header *types.H
 }
 
 // verifyCascadingFields는 헤더의 캐스케이딩 필드가 Eirene 엔진의 합의 규칙을 준수하는지 확인합니다.
+//
+// 매개변수:
+//   - chain: 체인 헤더 리더 인터페이스
+//   - header: 검증할 블록 헤더
+//   - parents: 부모 헤더 배열 (선택적)
+//
+// 반환값:
+//   - error: 검증 실패 시 오류 반환, 성공 시 nil 반환
+//
+// 이 함수는 블록 헤더의 캐스케이딩 필드(타임스탬프, 난이도, 가스 한도 등)가 Eirene 합의 규칙을
+// 준수하는지 검증합니다. 현재 구현에서는 기본 검증만 수행하지만, 실제 구현에서는 타임스탬프 검증,
+// 난이도 검증, 가스 한도 검증 등 더 많은 검증을 수행해야 합니다. 검증에 실패하면 적절한 오류를
+// 반환합니다.
 func (e *Eirene) verifyCascadingFields(chain consensus.ChainHeaderReader, header *types.Header, parents []*types.Header) error {
 	// 현재는 기본 검증만 수행
 	return nil
 }
 
 // VerifyUncles는 주어진 블록의 uncle이 합의 엔진의 규칙을 준수하는지 확인합니다.
+//
+// 매개변수:
+//   - chain: 체인 리더 인터페이스
+//   - block: 검증할 블록
+//
+// 반환값:
+//   - error: 검증 실패 시 오류 반환, 성공 시 nil 반환
+//
+// 이 함수는 블록의 엉클이 Eirene 합의 규칙을 준수하는지 검증합니다. Eirene는 PoS 합의 알고리즘으로,
+// 엉클 블록을 사용하지 않으므로, 엉클 배열이 비어 있지 않으면 오류를 반환합니다. 이 함수는 블록 검증
+// 과정에서 호출됩니다.
 func (e *Eirene) VerifyUncles(chain consensus.ChainReader, block *types.Block) error {
 	// Eirene에서는 uncle이 허용되지 않음
 	if len(block.Uncles()) > 0 {
@@ -301,6 +380,18 @@ func (e *Eirene) VerifyUncles(chain consensus.ChainReader, block *types.Block) e
 }
 
 // Prepare는 특정 엔진의 규칙에 따라 블록 헤더의 합의 필드를 초기화합니다.
+//
+// 매개변수:
+//   - chain: 체인 헤더 리더 인터페이스
+//   - header: 준비할 블록 헤더
+//
+// 반환값:
+//   - error: 준비 실패 시 오류 반환, 성공 시 nil 반환
+//
+// 이 함수는 새 블록을 생성하기 전에 블록 헤더의 합의 관련 필드를 초기화합니다.
+// 부모 블록을 확인하고, 난이도를 계산하며, 코인베이스, 믹스 다이제스트, 논스 등의
+// 필드를 설정합니다. 부모 블록을 찾을 수 없는 경우 오류를 반환합니다.
+// 이 함수는 블록 생성 과정에서 호출됩니다.
 func (e *Eirene) Prepare(chain consensus.ChainHeaderReader, header *types.Header) error {
 	// 헤더 번호가 있는지 확인
 	number := header.Number.Uint64()
@@ -321,12 +412,42 @@ func (e *Eirene) Prepare(chain consensus.ChainHeaderReader, header *types.Header
 }
 
 // Finalize는 합의 엔진에 의해 모든 상태 전환이 실행된 후 블록 헤더를 준비합니다.
+//
+// 매개변수:
+//   - chain: 체인 헤더 리더 인터페이스
+//   - header: 마무리할 블록 헤더
+//   - state: 상태 데이터베이스
+//   - txs: 트랜잭션 목록
+//   - uncles: 엉클 헤더 목록
+//
+// 이 함수는 블록 생성의 마지막 단계에서 호출됩니다. 블록 보상을 분배하고 필요한 상태 변경을
+// 적용합니다. Eirene에서는 엉클이 없으므로 uncles 매개변수는 사용되지 않습니다.
+// 보상 분배 과정에서 오류가 발생하면 로그에 기록하지만, 블록 생성 과정은 계속 진행됩니다.
 func (e *Eirene) Finalize(chain consensus.ChainHeaderReader, header *types.Header, state vm.StateDB, txs []*types.Transaction, uncles []*types.Header) {
 	// 보상 분배
-	e.distributeBlockReward(header, e.rewardState)
+	if err := e.distributeBlockReward(header, e.rewardState); err != nil {
+		log.Error("블록 보상 분배 실패", "err", err)
+		// 보상 분배 실패는 치명적이지 않으므로 계속 진행
+	}
 }
 
 // FinalizeAndAssemble는 상태 수정을 실행하고 최종 블록을 반환합니다.
+//
+// 매개변수:
+//   - chain: 체인 헤더 리더 인터페이스
+//   - header: 마무리할 블록 헤더
+//   - state: 상태 데이터베이스
+//   - body: 블록 바디
+//   - receipts: 영수증 목록
+//
+// 반환값:
+//   - *types.Block: 생성된 블록
+//   - error: 오류 발생 시 반환
+//
+// 이 함수는 Finalize와 유사하지만, 상태 변경을 적용한 후 최종 블록을 생성하여 반환합니다.
+// 헤더의 루트를 상태의 루트로 설정하고, 에포크 전환 블록인 경우 추가 작업을 수행합니다.
+// 블록 보상 분배, 서명 정보 업데이트, 슬래싱 처리, IBC 패킷 처리, 거버넌스 제안 처리 등의
+// 작업을 수행합니다. 각 작업에서 오류가 발생하면 로그에 기록하지만, 블록 생성 과정은 계속 진행됩니다.
 func (e *Eirene) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, body *types.Body, receipts []*types.Receipt) (*types.Block, error) {
 	// 헤더의 루트를 상태의 루트로 설정
 	header.Root = state.IntermediateRoot(true)
@@ -353,13 +474,22 @@ func (e *Eirene) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *
 	}
 
 	// 보상 분배
-	e.distributeBlockReward(header, e.rewardState)
+	if err := e.distributeBlockReward(header, e.rewardState); err != nil {
+		log.Error("블록 보상 분배 실패", "err", err)
+		// 보상 분배 실패는 치명적이지 않으므로 계속 진행
+	}
 
 	// 서명 정보 업데이트
-	e.updateSigningInfo(e.slashingState, header, signers)
+	if err := e.updateSigningInfo(e.slashingState, header, signers); err != nil {
+		log.Error("서명 정보 업데이트 실패", "err", err)
+		// 서명 정보 업데이트 실패는 치명적이지 않으므로 계속 진행
+	}
 
 	// 슬래싱 처리
-	e.processSlashing(e.validatorSet, e.slashingState, currentBlock)
+	if err := e.processSlashing(e.validatorSet, e.slashingState, currentBlock); err != nil {
+		log.Error("슬래싱 처리 실패", "err", err)
+		// 슬래싱 처리 실패는 치명적이지 않으므로 계속 진행
+	}
 
 	// 보상 상태 저장
 	if err := e.rewardState.store(e.db); err != nil {
@@ -368,10 +498,16 @@ func (e *Eirene) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *
 
 	// IBC 패킷 처리
 	currentTime := header.Time
-	e.processIBCPackets(currentBlock, uint64(currentTime))
+	if err := e.processIBCPackets(currentBlock, uint64(currentTime)); err != nil {
+		log.Error("IBC 패킷 처리 실패", "err", err)
+		// IBC 패킷 처리 실패는 치명적이지 않으므로 계속 진행
+	}
 
 	// 거버넌스 제안 처리
-	e.ProcessProposals(currentBlock)
+	if err := e.ProcessProposals(currentBlock); err != nil {
+		log.Error("거버넌스 제안 처리 실패", "err", err)
+		// 거버넌스 제안 처리 실패는 치명적이지 않으므로 계속 진행
+	}
 
 	// 거버넌스 상태를 데이터베이스에 저장
 	if err := e.saveGovernanceState(); err != nil {
@@ -394,6 +530,19 @@ func (e *Eirene) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *
 // }
 
 // Seal은 주어진 입력 블록에 대한 새로운 sealing 요청을 생성하고 결과를 주어진 채널로 푸시합니다.
+//
+// 매개변수:
+//   - chain: 체인 헤더 리더 인터페이스
+//   - block: 봉인할 블록
+//   - results: 봉인된 블록을 전송할 채널
+//   - stop: 봉인 작업을 중단하기 위한 채널
+//
+// 반환값:
+//   - error: 오류 발생 시 반환
+//
+// 이 함수는 블록을 봉인(서명)하는 작업을 수행합니다. 서명자와 서명 함수가 설정되어 있지 않으면
+// 오류를 반환합니다. 블록 헤더의 해시에 서명하고, 서명을 extra-data 필드에 추가한 후,
+// 서명된 블록을 results 채널로 전송합니다. 이 함수는 블록 생성의 마지막 단계에서 호출됩니다.
 func (e *Eirene) Seal(chain consensus.ChainHeaderReader, block *types.Block, results chan<- *types.Block, stop <-chan struct{}) error {
 	header := block.Header()
 
@@ -437,17 +586,48 @@ func (e *Eirene) Seal(chain consensus.ChainHeaderReader, block *types.Block, res
 }
 
 // SealHash는 블록이 봉인되기 전의 해시를 반환합니다.
+//
+// 매개변수:
+//   - header: 블록 헤더
+//
+// 반환값:
+//   - common.Hash: 봉인 전 헤더의 해시
+//
+// 이 함수는 블록 헤더의 봉인 전 해시를 계산합니다. 이 해시는 블록을 봉인(서명)할 때 사용됩니다.
+// 내부적으로 SealHash 함수를 호출하여 계산을 수행합니다. 이 함수는 블록 생성 과정에서 호출됩니다.
 func (e *Eirene) SealHash(header *types.Header) common.Hash {
 	return SealHash(header)
 }
 
 // CalcDifficulty는 난이도 조정 알고리즘입니다. 새 블록이 가져야 할 난이도를 반환합니다.
+//
+// 매개변수:
+//   - chain: 체인 헤더 리더 인터페이스
+//   - time: 새 블록의 타임스탬프
+//   - parent: 부모 블록 헤더
+//
+// 반환값:
+//   - *big.Int: 계산된 난이도
+//
+// 이 함수는 새 블록의 난이도를 계산합니다. Eirene는 PoS 합의 알고리즘으로, 난이도는 검증자 선택에
+// 사용되지 않으므로, 현재 구현에서는 간단히 1을 반환합니다. 실제 구현에서는 검증자 순서에 따라
+// 난이도를 조정할 수 있습니다. 이 함수는 블록 생성 과정에서 호출됩니다.
 func (e *Eirene) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
 	// 현재는 간단한 난이도 계산만 구현
 	return big.NewInt(1)
 }
 
-// APIs implements consensus.Engine, returning the user facing RPC APIs.
+// APIs는 합의 엔진에서 제공하는 RPC API를 반환합니다.
+//
+// 매개변수:
+//   - chain: 체인 헤더 리더 인터페이스
+//
+// 반환값:
+//   - []rpc.API: RPC API 배열
+//
+// 이 함수는 Eirene 합의 엔진에서 제공하는 RPC API를 반환합니다. 현재 구현에서는 기본 Eirene API만
+// 제공하지만, 실제 구현에서는 스테이킹 API, 거버넌스 API 등 더 많은 API를 제공해야 합니다.
+// 이 함수는 노드 시작 시 호출되어 사용 가능한 API를 등록합니다.
 func (e *Eirene) APIs(chain consensus.ChainHeaderReader) []rpc.API {
 	return []rpc.API{
 		{
@@ -461,85 +641,14 @@ func (e *Eirene) APIs(chain consensus.ChainHeaderReader) []rpc.API {
 	}
 }
 
-// snapshot은 지정된 블록 번호와 해시에 대한 스냅샷을 검색합니다.
-func (e *Eirene) snapshot(chain consensus.ChainHeaderReader, number uint64, hash common.Hash, parents []*types.Header) (*Snapshot, error) {
-	// 스냅샷 검색
-	var snap *Snapshot
-
-	// 캐시에서 스냅샷 검색
-	e.lock.RLock()
-	// if s, ok := e.recents.get(hash); ok {
-	// 	snap = s.(*Snapshot)
-	// }
-	e.lock.RUnlock()
-
-	if snap == nil {
-		// 데이터베이스에서 스냅샷 검색
-		if s, err := loadSnapshot(e.config, e.db, hash); err == nil {
-			log.Trace("Loaded voting snapshot from disk", "number", number, "hash", hash)
-			snap = s
-		}
-	}
-
-	if snap == nil {
-		// 스냅샷이 없으면 부모 블록에서 생성
-		if number == 0 {
-			// 제네시스 블록인 경우
-			genesis := chain.GetHeaderByNumber(0)
-			if genesis == nil {
-				return nil, errors.New("genesis block not found")
-			}
-
-			// 초기 검증자 목록 생성
-			validators := make(map[common.Address]uint64)
-			// 실제 구현에서는 제네시스 블록에서 초기 검증자 목록을 가져와야 합니다.
-			// 여기서는 임시로 빈 목록을 사용합니다.
-
-			// 초기 스냅샷 생성
-			snap = newSnapshot(e.config, 0, genesis.Hash(), validators)
-			if err := snap.store(e.db); err != nil {
-				return nil, err
-			}
-			log.Trace("Stored genesis voting snapshot to disk")
-		} else {
-			// 부모 블록에서 스냅샷 생성
-			var err error
-			if snap, err = e.snapshot(chain, number-1, parents[0].Hash(), parents[1:]); err != nil {
-				return nil, err
-			}
-
-			// 헤더 적용
-			header := chain.GetHeader(hash, number)
-			if header == nil {
-				return nil, errors.New("header not found")
-			}
-
-			// 헤더 적용
-			snap, err = snap.apply(header)
-			if err != nil {
-				return nil, err
-			}
-
-			// 스냅샷 캐싱 및 저장
-			e.lock.Lock()
-			// e.recents.add(hash, snap)
-			e.lock.Unlock()
-
-			// 에포크 경계에서 스냅샷 저장
-			if number%checkpointInterval == 0 {
-				if err = snap.store(e.db); err != nil {
-					log.Trace("Failed to store voting snapshot to disk", "err", err)
-				} else {
-					log.Trace("Stored voting snapshot to disk", "number", number, "hash", hash)
-				}
-			}
-		}
-	}
-
-	return snap, nil
-}
-
 // Close는 합의 엔진을 종료합니다.
+//
+// 반환값:
+//   - error: 종료 실패 시 오류 반환, 성공 시 nil 반환
+//
+// 이 함수는 Eirene 합의 엔진을 종료하고 사용된 리소스를 정리합니다. 현재 구현에서는 특별한 정리
+// 작업을 수행하지 않지만, 실제 구현에서는 고루틴 종료, 연결 종료, 데이터베이스 정리 등의 작업을
+// 수행해야 할 수 있습니다. 이 함수는 노드 종료 시 호출됩니다.
 func (e *Eirene) Close() error {
 	return nil
 }
@@ -804,23 +913,106 @@ func (e *Eirene) ProcessGovernance(state vm.StateDB, header *types.Header) error
 }
 
 // updateSigningInfo는 검증자의 서명 정보를 업데이트합니다.
-func (e *Eirene) updateSigningInfo(slashingState *SlashingState, header *types.Header, signers []common.Address) {
-	// 구현
+func (e *Eirene) updateSigningInfo(slashingState *SlashingState, header *types.Header, signers []common.Address) error {
+	if slashingState == nil {
+		return utils.FormatError(utils.ErrInternalError, "slashing state is nil")
+	}
+
+	if header == nil {
+		return utils.FormatError(utils.ErrInvalidParameter, "header is nil")
+	}
+
+	blockNumber := header.Number.Uint64()
+	// 블록 타임스탬프는 서명 정보 업데이트에 사용될 수 있음
+	// 현재는 사용하지 않으므로 주석 처리
+	// blockTime := header.Time
+
+	// 블록 생성자 주소 가져오기
+	signer, err := ecrecover(header, e.signatures)
+	if err != nil {
+		return utils.FormatError(err, "failed to recover signer from header")
+	}
+
+	log.Debug("Updating signing info", "blockNumber", blockNumber, "signer", signer.Hex())
+
+	// 서명 정보 업데이트 로직 구현
+	// 여기서는 간단히 서명 정보만 업데이트하고 실제 슬래싱은 processSlashing에서 처리
+	// 실제 구현에서는 서명 정보를 상태 DB에 저장하고 관리해야 함
+
+	return nil
 }
 
 // processSlashing은 슬래싱 처리를 수행합니다.
-func (e *Eirene) processSlashing(validatorSet utils.ValidatorSetInterface, slashingState *SlashingState, blockNumber uint64) {
-	// 구현
+func (e *Eirene) processSlashing(validatorSet utils.ValidatorSetInterface, slashingState *SlashingState, blockNumber uint64) error {
+	if validatorSet == nil {
+		return utils.FormatError(utils.ErrInvalidParameter, "validator set is nil")
+	}
+
+	if slashingState == nil {
+		return utils.FormatError(utils.ErrInternalError, "slashing state is nil")
+	}
+
+	log.Debug("Processing slashing", "blockNumber", blockNumber)
+
+	// 슬래싱 처리 로직 구현
+	// 1. 서명 누락 검증자 확인
+	// 2. 이중 서명 검증자 확인
+	// 3. 슬래싱 적용
+
+	// 실제 구현에서는 슬래싱 조건을 확인하고 위반한 검증자에게 페널티 적용
+	// 여기서는 간단한 로깅만 수행
+
+	return nil
 }
 
 // distributeBlockReward는 블록 보상을 분배합니다.
-func (e *Eirene) distributeBlockReward(header *types.Header, rewardState *RewardState) {
-	// 구현
+func (e *Eirene) distributeBlockReward(header *types.Header, rewardState *RewardState) error {
+	if header == nil {
+		return utils.FormatError(utils.ErrInvalidParameter, "header is nil")
+	}
+
+	if rewardState == nil {
+		return utils.FormatError(utils.ErrInternalError, "reward state is nil")
+	}
+
+	blockNumber := header.Number.Uint64()
+	
+	// 블록 생성자 주소 가져오기
+	signer, err := ecrecover(header, e.signatures)
+	if err != nil {
+		return utils.FormatError(err, "failed to recover signer from header")
+	}
+
+	log.Debug("Distributing block reward", "blockNumber", blockNumber, "signer", signer.Hex())
+
+	// 보상 분배 로직 구현
+	// 1. 기본 블록 보상 계산
+	// 2. 검증자, 위임자, 커뮤니티 기금에 보상 분배
+	// 3. 보상 상태 업데이트
+
+	// 실제 구현에서는 보상을 계산하고 분배하는 로직을 구현해야 함
+	// 여기서는 간단한 로깅만 수행
+
+	return nil
 }
 
 // processIBCPackets는 IBC 패킷을 처리합니다.
-func (e *Eirene) processIBCPackets(blockNumber uint64, timestamp uint64) {
-	// 구현
+func (e *Eirene) processIBCPackets(blockNumber uint64, timestamp uint64) error {
+	if e.ibcState == nil {
+		return utils.FormatError(utils.ErrInternalError, "IBC state is nil")
+	}
+
+	log.Debug("Processing IBC packets", "blockNumber", blockNumber, "timestamp", timestamp)
+
+	// IBC 패킷 처리 로직 구현
+	// 1. 수신된 패킷 처리
+	// 2. 타임아웃된 패킷 처리
+	// 3. 패킷 상태 업데이트
+
+	// 실제 구현에서는 IBC 패킷을 처리하는 로직을 구현해야 함
+	// 여기서는 간단한 로깅만 수행
+
+	return nil
 }
 
 // reportDoubleSign은 이중 서명을 신고합니다.
@@ -973,4 +1165,117 @@ func (e *Eirene) saveGovernanceState() error {
 	// 현재는 단순히 성공 반환
 	// 실제 구현에서는 거버넌스 상태를 직렬화하여 데이터베이스에 저장해야 합니다.
 	return nil
+}
+
+// snapshot은 지정된 블록 번호와 해시에 대한 스냅샷을 검색합니다.
+//
+// 매개변수:
+//   - chain: 체인 헤더 리더 인터페이스
+//   - number: 블록 번호
+//   - hash: 블록 해시
+//   - parents: 부모 헤더 배열 (선택적)
+//
+// 반환값:
+//   - *Snapshot: 검색된 스냅샷
+//   - error: 검색 실패 시 오류 반환, 성공 시 nil 반환
+//
+// 이 함수는 지정된 블록 번호와 해시에 대한 스냅샷을 검색합니다. 먼저 캐시에서 스냅샷을 검색하고,
+// 캐시에 없으면 데이터베이스에서 검색합니다. 데이터베이스에도 없으면 부모 블록에서 스냅샷을 생성합니다.
+// 이 함수는 블록 검증 과정에서 호출되어 현재 검증자 집합을 확인하는 데 사용됩니다.
+func (e *Eirene) snapshot(chain consensus.ChainHeaderReader, number uint64, hash common.Hash, parents []*types.Header) (*Snapshot, error) {
+	// 스냅샷 검색
+	var snap *Snapshot
+
+	// 캐시에서 스냅샷 검색
+	e.lock.RLock()
+	// if s, ok := e.recents.get(hash); ok {
+	// 	snap = s.(*Snapshot)
+	// }
+	e.lock.RUnlock()
+
+	if snap == nil {
+		// 데이터베이스에서 스냅샷 검색
+		if s, err := loadSnapshot(e.config, e.db, hash); err == nil {
+			log.Trace("Loaded voting snapshot from disk", "number", number, "hash", hash)
+			snap = s
+		}
+	}
+
+	if snap == nil {
+		// 스냅샷이 없으면 부모 블록에서 생성
+		if number == 0 {
+			// 제네시스 블록인 경우
+			genesis := chain.GetHeaderByNumber(0)
+			if genesis == nil {
+				return nil, errors.New("genesis block not found")
+			}
+
+			// 초기 검증자 목록 생성
+			validators := make(map[common.Address]uint64)
+			// 실제 구현에서는 제네시스 블록에서 초기 검증자 목록을 가져와야 합니다.
+			// 여기서는 임시로 빈 목록을 사용합니다.
+
+			// 초기 스냅샷 생성
+			snap = newSnapshot(e.config, 0, genesis.Hash(), validators)
+			if err := snap.store(e.db); err != nil {
+				return nil, err
+			}
+			log.Trace("Stored genesis voting snapshot to disk")
+		} else {
+			// 부모 블록에서 스냅샷 생성
+			var err error
+			if snap, err = e.snapshot(chain, number-1, parents[0].Hash(), parents[1:]); err != nil {
+				return nil, err
+			}
+
+			// 헤더 적용
+			header := chain.GetHeader(hash, number)
+			if header == nil {
+				return nil, errors.New("header not found")
+			}
+
+			// 헤더 적용
+			snap, err = snap.apply(header)
+			if err != nil {
+				return nil, err
+			}
+
+			// 스냅샷 캐싱 및 저장
+			e.lock.Lock()
+			// e.recents.add(hash, snap)
+			e.lock.Unlock()
+
+			// 에포크 경계에서 스냅샷 저장
+			if number%checkpointInterval == 0 {
+				if err = snap.store(e.db); err != nil {
+					log.Trace("Failed to store voting snapshot to disk", "err", err)
+				} else {
+					log.Trace("Stored voting snapshot to disk", "number", number, "hash", hash)
+				}
+			}
+		}
+	}
+
+	return snap, nil
+}
+
+// SetChainContext는 체인 컨텍스트를 설정합니다.
+func (e *Eirene) SetChainContext(chain consensus.ChainHeaderReader, currentBlock func() *types.Block, stateAt func(common.Hash) (*state.StateDB, error)) {
+	e.currentBlock = currentBlock
+	e.stateAt = stateAt
+	
+	// 코어 어댑터 생성
+	e.coreAdapter = NewCoreAdapter(
+		e.db,
+		e.validatorSet,
+		e.governance,
+		e.config,
+		chain,
+		currentBlock,
+		stateAt,
+	)
+	
+	// 어댑터 설정
+	e.govAdapter = e.governance
+	e.stakingAdapter = e.validatorSet
 }

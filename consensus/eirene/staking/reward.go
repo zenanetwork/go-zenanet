@@ -167,7 +167,7 @@ func (a *RewardAdapter) DistributeBlockReward(header *types.Header) {
 	validator := &Validator{
 		Address:     proposer,
 		VotingPower: big.NewInt(0),
-		Delegations: make(map[common.Address]*ValidatorDelegation),
+		Delegations: []*ValidatorDelegation{},
 	}
 
 	// 보상 분배
@@ -195,14 +195,14 @@ func (a *RewardAdapter) DistributeBlockReward(header *types.Header) {
 		}
 
 		// 위임자별 보상 분배
-		for delegator, delegation := range validator.Delegations {
+		for _, delegation := range validator.Delegations {
 			if totalShares.Sign() > 0 {
 				// 위임자 지분에 비례하여 보상 계산
 				delegatorShare := new(big.Int).Mul(delegatorReward, delegation.Amount)
 				delegatorShare = new(big.Int).Div(delegatorShare, totalShares)
 
 				// 위임자 보상 누적
-				a.addReward(delegator, delegatorShare)
+				a.addReward(delegation.Delegator, delegatorShare)
 			}
 		}
 	}
@@ -382,7 +382,8 @@ func (rm *RewardManager) DistributeRewards(blockNumber uint64, validator common.
 	if !ok {
 		return errors.New("invalid validator type")
 	}
-	commissionRate := float64(validator_obj.Commission) / 10000
+	// Commission이 *big.Int 타입이므로 float64로 변환하는 방식 수정
+	commissionRate := float64(validator_obj.Commission.Uint64()) / 10000
 
 	// 검증자에게 보상 지급 (검증자 보상 + 수수료)
 	totalValidatorReward := new(big.Int).Add(validatorReward, new(big.Int).Mul(delegatorReward, big.NewInt(int64(commissionRate*10000))))
@@ -522,7 +523,17 @@ func (rm *RewardManager) ClaimDelegatorRewards(delegator common.Address, validat
 	}
 
 	// 위임 정보 확인
-	delegation, exists := validator_obj.Delegations[delegator]
+	var delegation *ValidatorDelegation
+	exists := false
+	
+	for _, del := range validator_obj.Delegations {
+		if del.Delegator == delegator {
+			delegation = del
+			exists = true
+			break
+		}
+	}
+	
 	if !exists {
 		return nil, errors.New("delegation not found")
 	}
@@ -568,12 +579,23 @@ func (rm *RewardManager) GetDelegatorRewards(delegator common.Address, validator
 	}
 
 	// 위임 정보 확인
-	delegation, exists := validator_obj.Delegations[delegator]
+	var delegation *ValidatorDelegation
+	exists := false
+	
+	for _, del := range validator_obj.Delegations {
+		if del.Delegator == delegator {
+			delegation = del
+			exists = true
+			break
+		}
+	}
+	
 	if !exists {
 		return nil, errors.New("delegation not found")
 	}
 
-	return new(big.Int).Set(delegation.AccumulatedRewards), nil
+	// 보상 반환
+	return delegation.AccumulatedRewards, nil
 }
 
 // GetCommunityFund는 커뮤니티 기금의 잔액을 반환합니다

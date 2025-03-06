@@ -30,8 +30,8 @@ import (
 // GovernanceState는 거버넌스 시스템의 상태를 관리하는 구조체입니다.
 // 이 구조체는 제안, 투표, 거버넌스 매개변수 등을 관리합니다.
 type GovernanceState struct {
-	Proposals       map[uint64]*Proposal              // 제안 ID -> 제안
-	Votes           map[uint64]map[common.Address]int // 제안 ID -> 투표자 -> 투표 옵션
+	Proposals       map[uint64]*utils.StandardProposal       // 제안 ID -> 제안
+	Votes           map[uint64]map[common.Address]ProposalVote // 제안 ID -> 투표자 -> 투표 정보
 	NextProposalID  uint64                            // 다음 제안 ID
 	VotingPeriod    uint64                            // 투표 기간 (블록 수)
 	QuorumThreshold uint64                            // 정족수 임계값 (%)
@@ -114,9 +114,9 @@ func (gs *GovernanceState) processProposals(currentBlock uint64) {
 //   - proposalID: 조회할 제안 ID
 //
 // 반환값:
-//   - *Proposal: 제안 정보
+//   - *utils.StandardProposal: 제안 정보
 //   - error: 오류 발생 시 반환 (제안이 존재하지 않는 경우 등)
-func (gs *GovernanceState) getProposal(proposalID uint64) (*Proposal, error) {
+func (gs *GovernanceState) getProposal(proposalID uint64) (*utils.StandardProposal, error) {
 	// 구현
 	return nil, nil
 }
@@ -126,15 +126,19 @@ func (gs *GovernanceState) getProposal(proposalID uint64) (*Proposal, error) {
 // 매개변수:
 //   - proposalID: 실행할 제안 ID
 //   - currentBlock: 현재 블록 번호
-func (gs *GovernanceState) executeProposal(proposalID uint64, currentBlock uint64) {
+//
+// 반환값:
+//   - error: 오류 발생 시 반환
+func (gs *GovernanceState) executeProposal(proposalID uint64, currentBlock uint64) error {
 	// 구현
+	return nil
 }
 
 // getAllProposals는 모든 제안 목록을 반환합니다.
 //
 // 반환값:
-//   - []*Proposal: 모든 제안 목록
-func (gs *GovernanceState) getAllProposals() []*Proposal {
+//   - []*utils.StandardProposal: 모든 제안 목록
+func (gs *GovernanceState) getAllProposals() []*utils.StandardProposal {
 	// 구현
 	return nil
 }
@@ -465,146 +469,42 @@ type ABCIAdapter struct {
 	// 필요한 필드
 }
 
-// 제안 관련 타입
-type UpgradeInfo struct {
-	// 필요한 필드
-	Version string // 버전
-	Height  uint64 // 업그레이드 블록 높이
-	Info    string // 업그레이드 정보
-	URL     string // 업그레이드 URL
-	Hash    []byte // 업그레이드 해시
-}
+// 참고: 제안 관련 타입은 utils 패키지에서 정의된 타입을 사용합니다.
+// utils.UpgradeInfo, utils.FundingInfo, utils.StandardProposal, utils.UpgradeEvent
 
-type FundingInfo struct {
-	// 필요한 필드
-	Recipient common.Address // 수령인
-	Amount    *big.Int       // 금액
-	Purpose   string         // 목적
-}
+// UpgradeEvent 구조체는 utils.UpgradeEvent로 대체되었습니다.
+// 모든 코드에서 utils.UpgradeEvent를 사용하세요.
 
-// Proposal은 거버넌스 제안을 나타냅니다.
-type Proposal struct {
-	ID               uint64                 // 제안 ID
-	Title            string                 // 제안 제목
-	Description      string                 // 제안 설명
-	Type             string                 // 제안 유형
-	Status           string                 // 제안 상태
-	Proposer         common.Address         // 제안자 주소
-	SubmitBlock      uint64                 // 제출 블록
-	DepositEndBlock  uint64                 // 보증금 종료 블록
-	VotingStartBlock uint64                 // 투표 시작 블록
-	VotingEndBlock   uint64                 // 투표 종료 블록
-	ExecuteBlock     uint64                 // 실행 블록
-	Deposit          *big.Int               // 보증금
-	Parameters       map[string]string      // 매개변수 (매개변수 변경 제안용)
-	Upgrade          *utils.UpgradeInfo     // 업그레이드 정보 (업그레이드 제안용)
-	Funding          *utils.FundingInfo     // 자금 지원 정보 (자금 지원 제안용)
-	YesVotes         *big.Int               // 찬성 투표 수
-	NoVotes          *big.Int               // 반대 투표 수
-	AbstainVotes     *big.Int               // 기권 투표 수
-	VetoVotes        *big.Int               // 거부권 투표 수
-}
-
-// GetID는 제안 ID를 반환합니다.
-func (p *Proposal) GetID() uint64 {
-	return p.ID
-}
-
-// GetType은 제안 유형을 반환합니다.
-func (p *Proposal) GetType() string {
-	return p.Type
-}
-
-// GetTitle은 제안 제목을 반환합니다.
-func (p *Proposal) GetTitle() string {
-	return p.Title
-}
-
-// GetDescription은 제안 설명을 반환합니다.
-func (p *Proposal) GetDescription() string {
-	return p.Description
-}
-
-// GetProposer는 제안자 주소를 반환합니다.
-func (p *Proposal) GetProposer() common.Address {
-	return p.Proposer
-}
-
-// GetStatus는 제안 상태를 반환합니다.
-func (p *Proposal) GetStatus() string {
-	return p.Status
-}
-
-// GetVotingStartBlock은 투표 시작 블록을 반환합니다.
-func (p *Proposal) GetVotingStartBlock() uint64 {
-	return p.VotingStartBlock
-}
-
-// GetVotingEndBlock은 투표 종료 블록을 반환합니다.
-func (p *Proposal) GetVotingEndBlock() uint64 {
-	return p.VotingEndBlock
-}
-
+// ProposalVote는 제안에 대한 투표 정보를 나타냅니다.
+// 참고: 이 타입은 utils.StandardVote로 대체되었습니다.
+// 하위 호환성을 위해 유지되며, 내부적으로 utils.StandardVote를 사용합니다.
 type ProposalVote struct {
 	// 필요한 필드
 	ProposalID uint64         // 제안 ID
 	Voter      common.Address // 투표자
-	Option     uint8          // 투표 옵션
+	Option     string         // 투표 옵션 (uint8에서 string으로 변경)
 	Weight     *big.Int       // 투표 가중치
-	VoteBlock  uint64         // 투표 블록
+	Timestamp  time.Time      // 투표 시간 (VoteBlock 대체)
 }
 
-// 제안 유형 상수
-const (
-	ProposalTypeParameter = 0
-	ProposalTypeUpgrade   = 1
-	ProposalTypeFunding   = 2
-)
-
-// IBCClient에 대한 getter 메서드 추가
-func (c *IBCClient) GetState() uint8 {
-	return c.Status
+// ToStandardVote는 ProposalVote를 utils.StandardVote로 변환합니다.
+func (v *ProposalVote) ToStandardVote() *utils.StandardVote {
+	return &utils.StandardVote{
+		ProposalID: v.ProposalID,
+		Voter:      v.Voter,
+		Option:     v.Option,
+		Weight:     v.Weight,
+		Timestamp:  v.Timestamp,
+	}
 }
 
-func (c *IBCClient) GetLatestHeight() uint64 {
-	return c.UpdatedAt
-}
-
-// IBCConnection에 대한 getter 메서드 추가
-func (c *IBCConnection) GetVersions() []string {
-	// 단일 버전을 슬라이스로 반환
-	return []string{c.Version}
-}
-
-// IBCChannel에 대한 getter 메서드 추가
-func (c *IBCChannel) GetNextSequenceSend() uint64 {
-	// 실제 구현에서는 채널별 시퀀스 관리 필요
-	return 0
-}
-
-func (c *IBCChannel) GetNextSequenceRecv() uint64 {
-	// 실제 구현에서는 채널별 시퀀스 관리 필요
-	return 0
-}
-
-func (c *IBCChannel) GetNextSequenceAck() uint64 {
-	// 실제 구현에서는 채널별 시퀀스 관리 필요
-	return 0
-}
-
-// IBCPacket에 대한 getter 메서드 추가
-func (p *IBCPacket) GetDestPort() string {
-	return p.DestinationPort
-}
-
-func (p *IBCPacket) GetDestChannel() string {
-	return p.DestinationChannel
-}
-
-// UpgradeEvent는 업그레이드 이벤트를 나타냅니다.
-type UpgradeEvent struct {
-	Name        string    // 업그레이드 이름
-	Height      uint64    // 업그레이드 높이
-	Info        string    // 업그레이드 정보
-	UpgradeTime time.Time // 업그레이드 시간
+// FromStandardVote는 utils.StandardVote를 ProposalVote로 변환합니다.
+func FromStandardVote(sv *utils.StandardVote) *ProposalVote {
+	return &ProposalVote{
+		ProposalID: sv.ProposalID,
+		Voter:      sv.Voter,
+		Option:     sv.Option,
+		Weight:     sv.Weight,
+		Timestamp:  sv.Timestamp,
+	}
 }

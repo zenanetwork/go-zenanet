@@ -63,6 +63,11 @@ const (
 )
 
 // Proposal은 거버넌스 제안을 나타냅니다
+//
+// 이 구조체는 제안의 기본 정보, 보증금, 투표 상태 등을 포함합니다.
+// 제안은 네트워크 매개변수 변경, 소프트웨어 업그레이드, 커뮤니티 풀 지출, 텍스트 제안 등
+// 다양한 유형이 있으며, 각 유형에 따라 Content 필드에 다른 내용이 저장됩니다.
+// 제안은 보증금 기간, 투표 기간, 실행 단계를 거치며 상태가 변경됩니다.
 type Proposal struct {
 	ID          uint64         // 제안 ID
 	Type        string         // 제안 유형
@@ -91,14 +96,15 @@ type Proposal struct {
 	Votes        map[common.Address]string // 투표 목록 (주소 -> 투표 옵션)
 
 	// 제안 내용
-	Content ProposalContent `rlp:"-"` // 제안 내용
+	Content utils.ProposalContentInterface `rlp:"-"` // 제안 내용
 }
 
 // ProposalContent는 제안 내용의 인터페이스입니다
-type ProposalContent interface {
-	GetType() string
-	Execute(state *state.StateDB) error
-}
+// 참고: utils.ProposalContentInterface로 대체되었습니다.
+// type ProposalContent interface {
+// 	GetType() string
+// 	Execute(state *state.StateDB) error
+// }
 
 // ParameterChangeProposal은 매개변수 변경 제안을 나타냅니다
 type ParameterChangeProposal struct {
@@ -115,6 +121,38 @@ type ParamChange struct {
 // GetType은 제안 유형을 반환합니다
 func (p ParameterChangeProposal) GetType() string {
 	return ProposalTypeParameterChange
+}
+
+// Validate는 제안 내용의 유효성을 검사합니다
+func (p ParameterChangeProposal) Validate() error {
+	if len(p.Changes) == 0 {
+		return errors.New("parameter changes cannot be empty")
+	}
+	
+	for _, change := range p.Changes {
+		if change.Subspace == "" {
+			return errors.New("subspace cannot be empty")
+		}
+		if change.Key == "" {
+			return errors.New("key cannot be empty")
+		}
+	}
+	
+	return nil
+}
+
+// GetParams는 제안에 포함된 매개변수를 반환합니다
+func (p ParameterChangeProposal) GetParams() map[string]string {
+	params := make(map[string]string)
+	
+	for i, change := range p.Changes {
+		prefix := fmt.Sprintf("change_%d_", i)
+		params[prefix+"subspace"] = change.Subspace
+		params[prefix+"key"] = change.Key
+		params[prefix+"value"] = change.Value
+	}
+	
+	return params
 }
 
 // Execute는 매개변수 변경을 실행합니다
@@ -150,6 +188,32 @@ func (p UpgradeProposal) GetType() string {
 	return ProposalTypeUpgrade
 }
 
+// Validate는 제안 내용의 유효성을 검사합니다
+func (p UpgradeProposal) Validate() error {
+	if p.Name == "" {
+		return errors.New("upgrade name cannot be empty")
+	}
+	
+	if p.Height == 0 {
+		return errors.New("upgrade height must be greater than 0")
+	}
+	
+	return nil
+}
+
+// GetParams는 제안에 포함된 매개변수를 반환합니다
+func (p UpgradeProposal) GetParams() map[string]string {
+	params := make(map[string]string)
+	
+	params["name"] = p.Name
+	params["height"] = fmt.Sprintf("%d", p.Height)
+	params["info"] = p.Info
+	params["upgrade_time"] = p.UpgradeTime.Format(time.RFC3339)
+	params["cancel_upgrade_height"] = fmt.Sprintf("%d", p.CancelUpgradeHeight)
+	
+	return params
+}
+
 // Execute는 업그레이드를 실행합니다
 func (p UpgradeProposal) Execute(state *state.StateDB) error {
 	// 업그레이드 정보 로깅
@@ -177,6 +241,34 @@ type FundingProposal struct {
 // GetType은 제안 유형을 반환합니다
 func (p FundingProposal) GetType() string {
 	return ProposalTypeFunding
+}
+
+// Validate는 제안 내용의 유효성을 검사합니다
+func (p FundingProposal) Validate() error {
+	if p.Recipient == (common.Address{}) {
+		return errors.New("recipient address cannot be zero")
+	}
+	
+	if p.Amount == nil || p.Amount.Cmp(big.NewInt(0)) <= 0 {
+		return errors.New("amount must be greater than 0")
+	}
+	
+	if p.Reason == "" {
+		return errors.New("reason cannot be empty")
+	}
+	
+	return nil
+}
+
+// GetParams는 제안에 포함된 매개변수를 반환합니다
+func (p FundingProposal) GetParams() map[string]string {
+	params := make(map[string]string)
+	
+	params["recipient"] = p.Recipient.Hex()
+	params["amount"] = p.Amount.String()
+	params["reason"] = p.Reason
+	
+	return params
 }
 
 // Execute는 자금 지원을 실행합니다
@@ -210,6 +302,23 @@ func (p TextProposal) GetType() string {
 	return ProposalTypeText
 }
 
+// Validate는 제안 내용의 유효성을 검사합니다
+func (p TextProposal) Validate() error {
+	// 텍스트 제안은 특별한 검증이 필요 없음
+	return nil
+}
+
+// GetParams는 제안에 포함된 매개변수를 반환합니다
+func (p TextProposal) GetParams() map[string]string {
+	params := make(map[string]string)
+	
+	if p.Text != "" {
+		params["text"] = p.Text
+	}
+	
+	return params
+}
+
 // Execute는 텍스트 제안을 실행합니다
 func (p TextProposal) Execute(state *state.StateDB) error {
 	// 텍스트 제안은 실행할 내용이 없음
@@ -241,10 +350,14 @@ func NewDefaultGovernanceParams() *GovernanceParams {
 }
 
 // GovernanceManager는 거버넌스 시스템을 관리합니다
+//
+// 이 구조체는 제안 관리, 투표 처리, 매개변수 관리 등 거버넌스 시스템의 핵심 기능을 제공합니다.
+// 블록체인의 거버넌스 상태를 저장하고, 제안 생성부터 실행까지의 전체 생명주기를 관리합니다.
+// 또한 거버넌스 매개변수(투표 기간, 최소 보증금 등)를 관리하고 업데이트합니다.
 type GovernanceManager struct {
 	params       *GovernanceParams          // 거버넌스 매개변수
 	validatorSet utils.ValidatorSetInterface // 검증자 집합
-	proposals    map[uint64]*Proposal       // 제안 목록 (ID -> 제안)
+	proposals    map[uint64]*utils.StandardProposal // 제안 목록 (ID -> 제안)
 	nextID       uint64                     // 다음 제안 ID
 
 	lock sync.RWMutex // 동시성 제어를 위한 잠금
@@ -259,18 +372,36 @@ func NewGovernanceManager(params *GovernanceParams, validatorSet utils.Validator
 	return &GovernanceManager{
 		params:       params,
 		validatorSet: validatorSet,
-		proposals:    make(map[uint64]*Proposal),
+		proposals:    make(map[uint64]*utils.StandardProposal),
 		nextID:       1,
 	}
 }
 
 // SubmitProposal은 새로운 제안을 제출합니다
+//
+// 매개변수:
+//   - proposer: 제안자 주소
+//   - title: 제안 제목
+//   - description: 제안 설명
+//   - proposalType: 제안 유형
+//   - content: 제안 내용 인터페이스
+//   - initialDeposit: 초기 보증금
+//   - state: 상태 DB
+//
+// 반환값:
+//   - uint64: 생성된 제안 ID
+//   - error: 제안 생성 실패 시 오류 반환, 성공 시 nil 반환
+//
+// 이 함수는 새로운 거버넌스 제안을 생성하고 제안 ID를 반환합니다.
+// 제안 유형에 따라 필요한 추가 정보(매개변수 변경, 업그레이드, 커뮤니티 풀 지출 등)를 처리합니다.
+// 초기 보증금이 최소 보증금보다 적을 경우 오류를 반환합니다.
+// 제안이 성공적으로 생성되면 보증금 기간이 시작되고, 충분한 보증금이 모이면 투표 기간으로 전환됩니다.
 func (gm *GovernanceManager) SubmitProposal(
-	proposalType string,
+	proposer common.Address,
 	title string,
 	description string,
-	proposer common.Address,
-	content ProposalContent,
+	proposalType string,
+	content utils.ProposalContentInterface,
 	initialDeposit *big.Int,
 	state *state.StateDB,
 ) (uint64, error) {
@@ -299,7 +430,7 @@ func (gm *GovernanceManager) SubmitProposal(
 	now := time.Now()
 
 	// 제안 생성
-	proposal := &Proposal{
+	proposal := &utils.StandardProposal{
 		ID:          gm.nextID,
 		Type:        proposalType,
 		Title:       title,
@@ -328,6 +459,11 @@ func (gm *GovernanceManager) SubmitProposal(
 		proposal.Status = ProposalStatusVotingPeriod
 		proposal.VotingStart = now
 		proposal.VotingEnd = now.Add(time.Duration(gm.params.VotingPeriod) * time.Second)
+		// 블록 번호 기반 투표 기간 설정 (현재 블록 번호를 알 수 없으므로 0으로 가정)
+		proposal.VotingStartBlock = 0
+		proposal.VotingEndBlock = proposal.VotingStartBlock + uint64(gm.params.VotingPeriod/15) // 15초 블록 시간 가정
+		// 실행 시간 설정
+		proposal.ExecuteTime = proposal.VotingEnd.Add(time.Duration(gm.params.ExecutionDelay) * time.Second)
 	}
 
 	// 제안 추가
@@ -403,6 +539,11 @@ func (gm *GovernanceManager) Deposit(
 		proposal.Status = ProposalStatusVotingPeriod
 		proposal.VotingStart = now
 		proposal.VotingEnd = now.Add(time.Duration(gm.params.VotingPeriod) * time.Second)
+		// 블록 번호 기반 투표 기간 설정 (현재 블록 번호를 알 수 없으므로 0으로 가정)
+		proposal.VotingStartBlock = 0
+		proposal.VotingEndBlock = proposal.VotingStartBlock + uint64(gm.params.VotingPeriod/15) // 15초 블록 시간 가정
+		// 실행 시간 설정
+		proposal.ExecuteTime = proposal.VotingEnd.Add(time.Duration(gm.params.ExecutionDelay) * time.Second)
 	}
 
 	// 보증금 차감 로직 주석 처리
@@ -413,6 +554,20 @@ func (gm *GovernanceManager) Deposit(
 }
 
 // Vote는 제안에 투표합니다
+//
+// 매개변수:
+//   - proposalID: 제안 ID
+//   - voter: 투표자 주소
+//   - option: 투표 옵션 (Yes, No, Abstain, NoWithVeto)
+//
+// 반환값:
+//   - error: 투표 실패 시 오류 반환, 성공 시 nil 반환
+//
+// 이 함수는 지정된 제안에 투표를 추가합니다.
+// 제안이 존재하지 않거나 투표 기간이 아닌 경우 오류를 반환합니다.
+// 투표자가 이미 투표한 경우 기존 투표를 덮어씁니다.
+// 투표 옵션은 Yes(찬성), No(반대), Abstain(기권), NoWithVeto(거부권 행사) 중 하나여야 합니다.
+// 투표는 투표자의 스테이킹 양에 비례하여 가중치가 부여됩니다.
 func (gm *GovernanceManager) Vote(
 	proposalID uint64,
 	voter common.Address,
@@ -565,6 +720,21 @@ func (gm *GovernanceManager) EndVoting(proposalID uint64, state *state.StateDB) 
 }
 
 // ExecuteProposal은 통과된 제안을 실행합니다
+//
+// 매개변수:
+//   - proposalID: 제안 ID
+//
+// 반환값:
+//   - error: 제안 실행 실패 시 오류 반환, 성공 시 nil 반환
+//
+// 이 함수는 통과된 제안을 실행합니다.
+// 제안이 존재하지 않거나 통과 상태가 아닌 경우 오류를 반환합니다.
+// 제안 유형에 따라 다른 실행 로직이 적용됩니다:
+//   - 매개변수 변경: 시스템 매개변수를 업데이트합니다.
+//   - 소프트웨어 업그레이드: 지정된 블록 높이에서 업그레이드를 예약합니다.
+//   - 커뮤니티 풀 지출: 커뮤니티 풀에서 지정된 수령인에게 자금을 전송합니다.
+//   - 텍스트 제안: 실행 로직이 없으며 단순히 상태만 업데이트합니다.
+// 제안이 성공적으로 실행되면 상태가 'Executed'로 변경됩니다.
 func (gm *GovernanceManager) ExecuteProposal(proposalID uint64, state *state.StateDB) error {
 	gm.lock.Lock()
 	defer gm.lock.Unlock()
@@ -596,7 +766,7 @@ func (gm *GovernanceManager) ExecuteProposal(proposalID uint64, state *state.Sta
 }
 
 // GetProposal은 제안 정보를 반환합니다
-func (gm *GovernanceManager) GetProposal(proposalID uint64) (*Proposal, error) {
+func (gm *GovernanceManager) GetProposal(proposalID uint64) (*utils.StandardProposal, error) {
 	gm.lock.RLock()
 	defer gm.lock.RUnlock()
 
@@ -608,11 +778,11 @@ func (gm *GovernanceManager) GetProposal(proposalID uint64) (*Proposal, error) {
 }
 
 // GetProposals은 모든 제안 목록을 반환합니다
-func (gm *GovernanceManager) GetProposals() []*Proposal {
+func (gm *GovernanceManager) GetProposals() []*utils.StandardProposal {
 	gm.lock.RLock()
 	defer gm.lock.RUnlock()
 
-	proposals := make([]*Proposal, 0, len(gm.proposals))
+	proposals := make([]*utils.StandardProposal, 0, len(gm.proposals))
 	for _, proposal := range gm.proposals {
 		proposals = append(proposals, proposal)
 	}
@@ -620,11 +790,11 @@ func (gm *GovernanceManager) GetProposals() []*Proposal {
 }
 
 // GetProposalsByStatus는 특정 상태의 제안 목록을 반환합니다
-func (gm *GovernanceManager) GetProposalsByStatus(status string) []*Proposal {
+func (gm *GovernanceManager) GetProposalsByStatus(status string) []*utils.StandardProposal {
 	gm.lock.RLock()
 	defer gm.lock.RUnlock()
 
-	proposals := make([]*Proposal, 0)
+	proposals := make([]*utils.StandardProposal, 0)
 	for _, proposal := range gm.proposals {
 		if proposal.Status == status {
 			proposals = append(proposals, proposal)
@@ -714,7 +884,7 @@ func (gm *GovernanceManager) LoadFromState(state *state.StateDB) error {
 // GovernanceState는 거버넌스 시스템의 상태를 관리합니다.
 type GovernanceState struct {
 	NextProposalID  uint64                            // 다음 제안 ID
-	Proposals       map[uint64]*Proposal              // 제안 ID -> 제안
+	Proposals       map[uint64]*utils.StandardProposal              // 제안 ID -> 제안
 	Votes           map[uint64]map[common.Address]string // 제안 ID -> 투표자 -> 투표 옵션
 	MinProposalAge  uint64                            // 최소 제안 나이 (블록 수)
 	VotingPeriod    uint64                            // 투표 기간 (블록 수)
@@ -726,7 +896,7 @@ type GovernanceState struct {
 func newGovernanceState() *GovernanceState {
 	return &GovernanceState{
 		NextProposalID: 1,
-		Proposals:      make(map[uint64]*Proposal),
+		Proposals:      make(map[uint64]*utils.StandardProposal),
 		Votes:          make(map[uint64]map[common.Address]string),
 		MinProposalAge: 100,   // 약 25분 (15초 블록 기준)
 		VotingPeriod:   20160, // 약 1주일 (15초 블록 기준)
@@ -773,16 +943,20 @@ func (gs *GovernanceState) submitProposal(
 	proposalID := gs.NextProposalID
 	gs.NextProposalID++
 
-	proposal := &Proposal{
+	now := time.Now()
+	proposal := &utils.StandardProposal{
 		ID:               proposalID,
 		Type:             proposalType,
 		Title:            title,
 		Description:      description,
 		Proposer:         proposer,
-		SubmitTime:       time.Now(),
+		SubmitTime:       now,
 		SubmitBlock:      currentBlock,
 		VotingStartBlock: currentBlock + gs.MinProposalAge,
 		VotingEndBlock:   currentBlock + gs.MinProposalAge + gs.VotingPeriod,
+		VotingStart:      now.Add(time.Duration(gs.MinProposalAge) * 15 * time.Second), // 블록 시간을 15초로 가정
+		VotingEnd:        now.Add(time.Duration(gs.MinProposalAge + gs.VotingPeriod) * 15 * time.Second),
+		ExecuteTime:      now.Add(time.Duration(gs.MinProposalAge + gs.VotingPeriod + 100) * 15 * time.Second), // 실행 지연 100블록 가정
 		Status:           ProposalStatusPending,
 		TotalDeposit:     deposit,
 		Deposits:         make(map[common.Address]*big.Int),
@@ -791,6 +965,7 @@ func (gs *GovernanceState) submitProposal(
 		AbstainVotes:     big.NewInt(0),
 		VetoVotes:        big.NewInt(0),
 		Votes:            make(map[common.Address]string),
+		// Content 필드는 별도로 설정해야 함
 	}
 
 	// 보증금 추가
@@ -803,7 +978,7 @@ func (gs *GovernanceState) submitProposal(
 }
 
 // getProposal은 제안을 조회합니다
-func (gs *GovernanceState) getProposal(proposalID uint64) (*Proposal, error) {
+func (gs *GovernanceState) getProposal(proposalID uint64) (*utils.StandardProposal, error) {
 	gs.lock.RLock()
 	defer gs.lock.RUnlock()
 
@@ -908,10 +1083,36 @@ func (gs *GovernanceState) getVotes(proposalID uint64) ([]Vote, error) {
 }
 
 // Vote는 투표 정보를 나타냅니다
+// 참고: 이 타입은 utils.StandardVote로 대체되었습니다.
+// 하위 호환성을 위해 유지되며, 내부적으로 utils.StandardVote를 사용합니다.
 type Vote struct {
-	Voter  common.Address
-	Option string
-	Weight *big.Int
+	Voter      common.Address
+	Option     string
+	Weight     *big.Int
+	ProposalID uint64         // 추가됨
+	Timestamp  time.Time      // 추가됨
+}
+
+// ToStandardVote는 Vote를 utils.StandardVote로 변환합니다.
+func (v *Vote) ToStandardVote() *utils.StandardVote {
+	return &utils.StandardVote{
+		ProposalID: v.ProposalID,
+		Voter:      v.Voter,
+		Option:     v.Option,
+		Weight:     v.Weight,
+		Timestamp:  v.Timestamp,
+	}
+}
+
+// FromStandardVote는 utils.StandardVote를 Vote로 변환합니다.
+func FromStandardVote(sv *utils.StandardVote) *Vote {
+	return &Vote{
+		ProposalID: sv.ProposalID,
+		Voter:      sv.Voter,
+		Option:     sv.Option,
+		Weight:     sv.Weight,
+		Timestamp:  sv.Timestamp,
+	}
 }
 
 // store는 거버넌스 상태를 DB에 저장합니다

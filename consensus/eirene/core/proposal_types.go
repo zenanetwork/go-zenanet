@@ -19,7 +19,9 @@ package core
 import (
 	"errors"
 	"math/big"
+	"strconv"
 
+	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/consensus/eirene/utils"
 	"github.com/zenanetwork/go-zenanet/core/state"
 )
@@ -32,6 +34,19 @@ type ParameterChangeProposal struct {
 // GetType은 제안 유형을 반환합니다.
 func (p *ParameterChangeProposal) GetType() string {
 	return utils.ProposalTypeParameter
+}
+
+// Validate는 제안 내용의 유효성을 검사합니다.
+func (p *ParameterChangeProposal) Validate() error {
+	if p.Parameters == nil || len(p.Parameters) == 0 {
+		return errors.New("parameters cannot be empty")
+	}
+	return nil
+}
+
+// GetParams는 제안에 포함된 매개변수를 반환합니다.
+func (p *ParameterChangeProposal) GetParams() map[string]string {
+	return p.Parameters
 }
 
 // Execute는 제안을 실행합니다.
@@ -50,6 +65,28 @@ func (p *UpgradeProposal) GetType() string {
 	return utils.ProposalTypeUpgrade
 }
 
+// Validate는 제안 내용의 유효성을 검사합니다.
+func (p *UpgradeProposal) Validate() error {
+	if p.UpgradeInfo.Name == "" {
+		return errors.New("upgrade name cannot be empty")
+	}
+	if p.UpgradeInfo.Height == 0 {
+		return errors.New("upgrade height must be greater than 0")
+	}
+	return nil
+}
+
+// GetParams는 제안에 포함된 매개변수를 반환합니다.
+func (p *UpgradeProposal) GetParams() map[string]string {
+	params := make(map[string]string)
+	params["name"] = p.UpgradeInfo.Name
+	params["height"] = strconv.FormatUint(p.UpgradeInfo.Height, 10)
+	params["info"] = p.UpgradeInfo.Info
+	params["version"] = p.UpgradeInfo.Version
+	params["url"] = p.UpgradeInfo.URL
+	return params
+}
+
 // Execute는 제안을 실행합니다.
 func (p *UpgradeProposal) Execute(state *state.StateDB) error {
 	// 업그레이드 로직 구현
@@ -64,6 +101,30 @@ type FundingProposal struct {
 // GetType은 제안 유형을 반환합니다.
 func (p *FundingProposal) GetType() string {
 	return utils.ProposalTypeFunding
+}
+
+// Validate는 제안 내용의 유효성을 검사합니다.
+func (p *FundingProposal) Validate() error {
+	if p.FundingInfo.Recipient == (common.Address{}) {
+		return errors.New("recipient address cannot be zero")
+	}
+	if p.FundingInfo.Amount == nil || p.FundingInfo.Amount.Cmp(big.NewInt(0)) <= 0 {
+		return errors.New("amount must be greater than 0")
+	}
+	if p.FundingInfo.Reason == "" {
+		return errors.New("reason cannot be empty")
+	}
+	return nil
+}
+
+// GetParams는 제안에 포함된 매개변수를 반환합니다.
+func (p *FundingProposal) GetParams() map[string]string {
+	params := make(map[string]string)
+	params["recipient"] = p.FundingInfo.Recipient.Hex()
+	params["amount"] = p.FundingInfo.Amount.String()
+	params["reason"] = p.FundingInfo.Reason
+	params["purpose"] = p.FundingInfo.Purpose
+	return params
 }
 
 // Execute는 제안을 실행합니다.
@@ -91,6 +152,18 @@ type TextProposal struct {
 // GetType은 제안 유형을 반환합니다.
 func (p *TextProposal) GetType() string {
 	return utils.ProposalTypeText
+}
+
+// Validate는 제안 내용의 유효성을 검사합니다.
+func (p *TextProposal) Validate() error {
+	// 텍스트 제안은 추가 검증이 필요 없습니다.
+	return nil
+}
+
+// GetParams는 제안에 포함된 매개변수를 반환합니다.
+func (p *TextProposal) GetParams() map[string]string {
+	// 텍스트 제안은 매개변수가 없습니다.
+	return make(map[string]string)
 }
 
 // Execute는 제안을 실행합니다.
