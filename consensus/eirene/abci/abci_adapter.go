@@ -143,11 +143,11 @@ func (a *ABCIAdapter) ProcessBlock(chain consensus.ChainHeaderReader, block *typ
 			AppHash:         block.Root().Bytes(),
 			ProposerAddress: block.Coinbase().Bytes(),
 		},
-		LastCommitInfo: abci.CommitInfo{
+		LastCommitInfo: abci.LastCommitInfo{
 			Round: 0,
 			Votes: []abci.VoteInfo{}, // 실제 구현에서는 검증자 투표 정보를 포함
 		},
-		ByzantineValidators: []abci.Misbehavior{}, // 실제 구현에서는 악의적인 검증자 증거를 포함
+		ByzantineValidators: []abci.Evidence{}, // 실제 구현에서는 악의적인 검증자 증거를 포함
 	}
 	beginBlockRes := a.app.BeginBlock(beginBlockReq)
 	a.logger.Debug("BeginBlock response", "res", beginBlockRes)
@@ -188,8 +188,8 @@ func (a *ABCIAdapter) InitChain(chainConfig *params.ChainConfig, genesisBlock *t
 	initChainReq := abci.RequestInitChain{
 		Time:    time.Unix(int64(genesisBlock.Time()), 0),
 		ChainId: fmt.Sprintf("%d", chainConfig.ChainID.Uint64()),
-		ConsensusParams: &tmproto.ConsensusParams{
-			Block: &tmproto.BlockParams{
+		ConsensusParams: &abci.ConsensusParams{
+			Block: &abci.BlockParams{
 				MaxBytes: 1048576, // 1MB
 				MaxGas:   -1,      // 무제한
 			},

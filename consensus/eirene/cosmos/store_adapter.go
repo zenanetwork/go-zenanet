@@ -228,4 +228,16 @@ func (a *StateDBAdapter) GetKeysWithPrefix(prefix []byte) ([][]byte, error) {
 	
 	a.logger.Info("Found keys with prefix", "prefix", prefixStr, "count", len(keys))
 	return keys, nil
+}
+
+// GetKVStore는 KVStore 인터페이스를 구현한 어댑터 자신을 반환합니다.
+func (a *StateDBAdapter) GetKVStore() interface{} {
+	return a
+}
+
+// GetContext는 Cosmos SDK 컨텍스트를 생성하고 반환합니다.
+func (a *StateDBAdapter) GetContext() interface{} {
+	// 실제 구현에서는 sdk.Context를 생성하고 반환해야 합니다.
+	// 여기서는 임시로 nil을 반환합니다.
+	return nil
 } 
