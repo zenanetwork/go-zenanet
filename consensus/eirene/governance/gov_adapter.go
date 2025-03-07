@@ -539,85 +539,27 @@ func (a *GovAdapter) activateVotingPeriod(proposal *GovProposal) {
 //   - 기권(abstain) 투표를 제외한 찬성(yes) 투표가 임계값을 초과해야 합니다.
 // 투표 결과에 따라 제안 상태가 'Passed' 또는 'Rejected'로 업데이트됩니다.
 func (a *GovAdapter) tallyVotes(proposal *GovProposal) bool {
-	// 투표 수 집계
-	totalVotes := big.NewInt(0)
-	yesVotes := big.NewInt(0)
-	noVotes := big.NewInt(0)
-	noWithVetoVotes := big.NewInt(0)
-	abstainVotes := big.NewInt(0)
-
-	// 각 투표자의 스테이킹 양에 따라 투표 가중치 계산
-	for _, vote := range proposal.Votes {
-		// 투표자의 스테이킹 양 가져오기 (실제로는 스테이킹 어댑터에서 가져와야 함)
-		// 여기서는 간단히 모든 투표자가 동일한 가중치를 가진다고 가정
-		weight := big.NewInt(1)
-		totalVotes.Add(totalVotes, weight)
-
-		switch vote.Option {
-		case GovOptionYes:
-			yesVotes.Add(yesVotes, weight)
-		case GovOptionNo:
-			noVotes.Add(noVotes, weight)
-		case GovOptionNoWithVeto:
-			noWithVetoVotes.Add(noWithVetoVotes, weight)
-		case GovOptionAbstain:
-			abstainVotes.Add(abstainVotes, weight)
-		}
-	}
-
 	// 총 스테이킹 양 가져오기 (실제로는 스테이킹 어댑터에서 가져와야 함)
 	// 여기서는 간단히 총 투표 수의 3배라고 가정
+	totalVotes := big.NewInt(int64(len(proposal.Votes)))
 	totalStaked := new(big.Int).Mul(totalVotes, big.NewInt(3))
 
-	// 쿼럼 확인
-	if totalStaked.Sign() > 0 {
-		quorumRatio := new(big.Float).Quo(
-			new(big.Float).SetInt(totalVotes),
-			new(big.Float).SetInt(totalStaked),
-		)
-		quorumThreshold := big.NewFloat(a.quorumFloat)
+	// 투표 집계 최적화기 사용
+	result := a.voteTallyOptimizer.TallyVotes(
+		proposal,
+		a.quorumFloat,
+		a.vetoThresholdFloat,
+		a.thresholdFloat,
+		totalStaked,
+	)
 
-		if quorumRatio.Cmp(quorumThreshold) < 0 {
-			a.logger.Info("Proposal rejected due to insufficient quorum", "id", proposal.ID, "quorum", quorumRatio, "threshold", quorumThreshold)
-			return false
-		}
+	if result.Passed {
+		a.logger.Info("Proposal passed", "id", proposal.ID, "yes_votes", result.YesVotes, "total_votes", result.TotalVotes, "tally_time", result.TallyTime)
+	} else {
+		a.logger.Info("Proposal rejected", "id", proposal.ID, "yes_votes", result.YesVotes, "total_votes", result.TotalVotes, "tally_time", result.TallyTime)
 	}
 
-	// 거부권 확인
-	if totalVotes.Sign() > 0 {
-		vetoRatio := new(big.Float).Quo(
-			new(big.Float).SetInt(noWithVetoVotes),
-			new(big.Float).SetInt(totalVotes),
-		)
-		vetoThreshold := big.NewFloat(a.vetoThresholdFloat)
-
-		if vetoRatio.Cmp(vetoThreshold) >= 0 {
-			a.logger.Info("Proposal rejected due to veto", "id", proposal.ID, "veto_ratio", vetoRatio, "threshold", vetoThreshold)
-			return false
-		}
-	}
-
-	// 통과 임계값 확인
-	if new(big.Int).Add(yesVotes, abstainVotes).Sign() > 0 {
-		// 먼저 noVotes와 noWithVetoVotes를 더함
-		noTotal := new(big.Int).Add(noVotes, noWithVetoVotes)
-		// 그 다음 yesVotes와 noTotal을 더함
-		voteTotal := new(big.Int).Add(yesVotes, noTotal)
-
-		yesRatio := new(big.Float).Quo(
-			new(big.Float).SetInt(yesVotes),
-			new(big.Float).SetInt(voteTotal),
-		)
-		threshold := big.NewFloat(a.thresholdFloat)
-
-		if yesRatio.Cmp(threshold) >= 0 {
-			a.logger.Info("Proposal passed", "id", proposal.ID, "yes_ratio", yesRatio, "threshold", threshold)
-			return true
-		}
-	}
-
-	a.logger.Info("Proposal rejected", "id", proposal.ID)
-	return false
+	return result.Passed
 }
 
 // executeParameterChangeProposal은 매개변수 변경 제안을 실행합니다.

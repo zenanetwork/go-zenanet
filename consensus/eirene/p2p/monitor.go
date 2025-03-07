@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/log"
 )
 
@@ -57,6 +58,7 @@ type NetworkMonitor struct {
 	discovery       *PeerDiscovery     // 피어 검색
 	propagator      *BlockPropagator   // 블록 전파기
 	securityManager *SecurityManager   // 보안 관리자
+	delayHandler    *NetworkDelayHandler // 네트워크 지연 핸들러
 	
 	// 네트워크 통계
 	stats           *NetworkStats      // 현재 네트워크 통계
@@ -134,18 +136,37 @@ func NewNetworkMonitor(
 	securityManager *SecurityManager,
 	dataDir string,
 ) *NetworkMonitor {
-	return &NetworkMonitor{
+	// 네트워크 지연 핸들러 설정
+	delayConfig := NetworkDelayConfig{
+		MaxLatencyThreshold:    3 * time.Second,
+		LatencyHistorySize:     100,
+		AdaptiveTimeoutEnabled: true,
+		MinTimeout:             1 * time.Second,
+		MaxTimeout:             30 * time.Second,
+		TimeoutMultiplier:      2.0,
+		PredictionEnabled:      true,
+		PredictionWindow:       10,
+		PrioritizationEnabled:  true,
+		HighPriorityLatencyFactor: 0.8,
+		PartitionDetectionEnabled: true,
+		PartitionThreshold:     0.5,
+	}
+
+	nm := &NetworkMonitor{
 		peerSet:         peerSet,
 		discovery:       discovery,
 		propagator:      propagator,
 		securityManager: securityManager,
+		delayHandler:    NewNetworkDelayHandler(delayConfig),
 		stats:           &NetworkStats{},
-		historicalStats: make([]*NetworkStats, 0, maxStoredStats),
+		historicalStats: make([]*NetworkStats, 0),
 		warnings:        make(map[string]bool),
 		dataDir:         dataDir,
 		quit:            make(chan struct{}),
-		logger:          log.New("module", "eirene/p2p/monitor"),
+		logger:          log.New("module", "network_monitor"),
 	}
+
+	return nm
 }
 
 // Start는 네트워크 모니터를 시작합니다.
@@ -211,33 +232,56 @@ func (nm *NetworkMonitor) collectStats() {
 	nm.lock.Lock()
 	defer nm.lock.Unlock()
 	
-	// 새 통계 생성
+	// 새 통계 객체 생성
 	stats := &NetworkStats{
 		Timestamp:             time.Now(),
 		GeographicDistribution: make(map[string]int),
 		SecurityStats:          make(map[string]interface{}),
 	}
 	
-	// 피어 관련 통계 수집
+	// 피어 정보 수집
 	peers := nm.peerSet.AllPeers()
 	stats.PeerCount = len(peers)
-	
-	var inbound, outbound int
 	stats.ConnectedPeers = make([]MonitorPeerInfo, 0, len(peers))
 	
-	for _, peer := range peers {
-		// 피어 정보 수집
-		peerInfo := MonitorPeerInfo{
-			ID:      peer.ID().String(),
-			Name:    peer.Name(),
-			Version: peer.Version(),
-			Head:    peer.Head().Hex(),
-			TD:      peer.TD(),
+	inbound := 0
+	outbound := 0
+	
+	for _, p := range peers {
+		// 피어 정보 생성
+		info := MonitorPeerInfo{
+			ID:            p.ID().String(),
+			Name:          p.Name(),
+			Address:       p.RemoteAddr().String(),
+			ConnectedTime: p.ConnectedTime(),
+			Latency:       p.Latency(),
+			Version:       p.Version(),
 		}
 		
-		// TODO: 실제 구현에서는 피어의 방향, 연결 시간, 지연 시간 등을 수집
+		// 방향 설정
+		if p.IsInbound() {
+			info.Direction = "inbound"
+			inbound++
+		} else {
+			info.Direction = "outbound"
+			outbound++
+		}
 		
-		stats.ConnectedPeers = append(stats.ConnectedPeers, peerInfo)
+		// 헤드 블록 정보 설정 (가능한 경우)
+		head := p.Head()
+		if head != (common.Hash{}) { // 빈 해시가 아닌 경우
+			info.Head = head.Hex()
+			info.TD = p.TD()
+		}
+		
+		stats.ConnectedPeers = append(stats.ConnectedPeers, info)
+		
+		// 지역 분포 업데이트
+		region := getRegionFromIP(p.RemoteAddr().String())
+		stats.GeographicDistribution[region]++
+		
+		// 네트워크 지연 핸들러 업데이트
+		nm.delayHandler.UpdatePeerLatencyByID(p.ID().String(), p.Latency())
 	}
 	
 	stats.InboundPeers = inbound
@@ -246,41 +290,56 @@ func (nm *NetworkMonitor) collectStats() {
 	// 블록 전파 통계 수집
 	if nm.propagator != nil {
 		propStats := nm.propagator.GetPropagationStats()
-		if avgTime, ok := propStats["avg_propagation_time"].(string); ok {
-			stats.AvgBlockPropagationTime, _ = time.ParseDuration(avgTime)
+		if avgTime, ok := propStats["avg_propagation_time"].(time.Duration); ok {
+			stats.AvgBlockPropagationTime = avgTime
 		}
-		if success, ok := propStats["avg_peers_per_block"].(float64); ok {
-			if stats.PeerCount > 0 {
-				stats.BlockPropagationSuccess = success / float64(stats.PeerCount)
-			}
+		if maxTime, ok := propStats["max_propagation_time"].(time.Duration); ok {
+			stats.MaxBlockPropagationTime = maxTime
+		}
+		if successRate, ok := propStats["success_rate"].(float64); ok {
+			stats.BlockPropagationSuccess = successRate
+		}
+		if avgTxTime, ok := propStats["avg_tx_propagation_time"].(time.Duration); ok {
+			stats.AvgTxPropagationTime = avgTxTime
+		}
+		if txSuccessRate, ok := propStats["tx_success_rate"].(float64); ok {
+			stats.TxPropagationSuccess = txSuccessRate
 		}
 	}
+	
+	// 네트워크 지연 통계 수집
+	delayStats := nm.delayHandler.GetNetworkStats()
+	stats.AvgNetworkLatency = delayStats["avg_network_latency"].(time.Duration)
+	stats.MaxNetworkLatency = delayStats["network_jitter"].(time.Duration)
+	stats.NetworkPartitionRisk = delayStats["network_partition_risk"].(float64)
+	
+	// 대역폭 사용량 수집 (예시)
+	stats.InboundBandwidth = 0  // 실제 구현에서는 실제 대역폭 측정
+	stats.OutboundBandwidth = 0 // 실제 구현에서는 실제 대역폭 측정
 	
 	// 보안 통계 수집
 	if nm.securityManager != nil {
 		stats.SecurityStats = nm.securityManager.GetSecurityStats()
 	}
 	
-	// 네트워크 파티션 위험 계산
-	stats.NetworkPartitionRisk = nm.calculatePartitionRisk()
-	
 	// 현재 통계 업데이트
 	nm.stats = stats
 	
 	// 과거 통계에 추가
 	nm.historicalStats = append(nm.historicalStats, stats)
-	
-	// 최대 저장 통계 수 제한
-	if len(nm.historicalStats) > maxStoredStats {
+	if len(nm.historicalStats) > 1000 { // 최대 1000개 유지
 		nm.historicalStats = nm.historicalStats[1:]
 	}
 	
-	nm.logger.Debug("Network stats collected", 
-		"peers", stats.PeerCount,
-		"inbound", stats.InboundPeers,
-		"outbound", stats.OutboundPeers,
-		"propagation_time", stats.AvgBlockPropagationTime,
-		"partition_risk", stats.NetworkPartitionRisk)
+	// 이슈 감지
+	nm.detectIssues()
+}
+
+// getRegionFromIP는 IP 주소에서 지역 정보를 추출합니다.
+func getRegionFromIP(ipAddr string) string {
+	// 실제 구현에서는 GeoIP 데이터베이스를 사용하여 지역 정보를 추출
+	// 여기서는 간단히 "unknown" 반환
+	return "unknown"
 }
 
 // calculatePartitionRisk는 네트워크 파티션 위험을 계산합니다.
@@ -303,45 +362,63 @@ func (nm *NetworkMonitor) calculatePartitionRisk() float64 {
 	}
 }
 
-// detectIssues는 네트워크 문제를 감지합니다.
+// detectIssues는 네트워크 이슈를 감지합니다.
 func (nm *NetworkMonitor) detectIssues() {
-	nm.lock.Lock()
-	defer nm.lock.Unlock()
+	// 경고 초기화
+	nm.warnings = make(map[string]bool)
 	
-	stats := nm.stats
-	
-	// 피어 수 경고
-	if stats.PeerCount < peerCountWarningThreshold {
-		if !nm.warnings["low_peer_count"] {
-			nm.warnings["low_peer_count"] = true
-			nm.logger.Warn("Low peer count detected", "count", stats.PeerCount, "threshold", peerCountWarningThreshold)
-		}
-	} else {
-		nm.warnings["low_peer_count"] = false
+	// 피어 수 확인
+	if nm.stats.PeerCount < 3 {
+		nm.warnings["low_peer_count"] = true
+		nm.logger.Warn("Low peer count detected", "count", nm.stats.PeerCount)
 	}
 	
-	// 블록 전파 시간 경고
-	if stats.AvgBlockPropagationTime > blockPropagationWarningThreshold {
-		if !nm.warnings["slow_block_propagation"] {
-			nm.warnings["slow_block_propagation"] = true
-			nm.logger.Warn("Slow block propagation detected", 
-				"time", stats.AvgBlockPropagationTime, 
-				"threshold", blockPropagationWarningThreshold)
-		}
-	} else {
-		nm.warnings["slow_block_propagation"] = false
+	// 인바운드/아웃바운드 비율 확인
+	if nm.stats.OutboundPeers > 0 && float64(nm.stats.InboundPeers)/float64(nm.stats.OutboundPeers) < 0.2 {
+		nm.warnings["inbound_outbound_imbalance"] = true
+		nm.logger.Warn("Inbound/outbound peer imbalance detected", 
+			"inbound", nm.stats.InboundPeers, 
+			"outbound", nm.stats.OutboundPeers)
 	}
 	
-	// 네트워크 파티션 위험 경고
-	if stats.NetworkPartitionRisk > networkPartitionWarningThreshold {
-		if !nm.warnings["network_partition_risk"] {
-			nm.warnings["network_partition_risk"] = true
-			nm.logger.Warn("Network partition risk detected", 
-				"risk", stats.NetworkPartitionRisk, 
-				"threshold", networkPartitionWarningThreshold)
+	// 블록 전파 성공률 확인
+	if nm.stats.BlockPropagationSuccess < 0.9 {
+		nm.warnings["low_block_propagation"] = true
+		nm.logger.Warn("Low block propagation success rate", 
+			"rate", nm.stats.BlockPropagationSuccess)
+	}
+	
+	// 네트워크 지연 확인
+	if nm.stats.AvgNetworkLatency > 2*time.Second {
+		nm.warnings["high_network_latency"] = true
+		nm.logger.Warn("High network latency detected", 
+			"latency", nm.stats.AvgNetworkLatency)
+	}
+	
+	// 네트워크 파티션 확인
+	if nm.delayHandler.IsNetworkPartitioned() {
+		nm.warnings["network_partition"] = true
+		nm.logger.Warn("Network partition risk detected", 
+			"risk", nm.stats.NetworkPartitionRisk)
+	}
+	
+	// 지연 시간이 높은 피어 확인
+	highLatencyPeers := nm.delayHandler.GetHighLatencyPeers()
+	if len(highLatencyPeers) > 0 {
+		nm.warnings["high_latency_peers"] = true
+		nm.logger.Warn("High latency peers detected", 
+			"count", len(highLatencyPeers))
+	}
+	
+	// 보안 이슈 확인
+	if nm.securityManager != nil {
+		securityIssues := nm.securityManager.GetSecurityStats()
+		for issue, value := range securityIssues {
+			if active, ok := value.(bool); ok && active {
+				nm.warnings[issue] = true
+				nm.logger.Warn("Security issue detected", "issue", issue)
+			}
 		}
-	} else {
-		nm.warnings["network_partition_risk"] = false
 	}
 }
 
@@ -498,4 +575,19 @@ func (nm *NetworkMonitor) GenerateNetworkReport() string {
 	}
 	
 	return report
+}
+
+// GetPeerTimeout은 피어의 타임아웃 값을 반환합니다.
+func (nm *NetworkMonitor) GetPeerTimeout(peer common.Address) time.Duration {
+	return nm.delayHandler.GetPeerTimeout(peer)
+}
+
+// GetPrioritizedPeers는 우선순위가 지정된 피어 목록을 반환합니다.
+func (nm *NetworkMonitor) GetPrioritizedPeers() map[int][]common.Address {
+	return nm.delayHandler.GetPrioritizedPeers()
+}
+
+// PredictPeerLatency는 피어의 미래 지연 시간을 예측합니다.
+func (nm *NetworkMonitor) PredictPeerLatency(peer common.Address) time.Duration {
+	return nm.delayHandler.PredictLatency(peer)
 } 

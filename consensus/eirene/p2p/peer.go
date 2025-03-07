@@ -20,7 +20,9 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"sync"
+	"time"
 
 	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/core/types"
@@ -359,4 +361,30 @@ func (ps *PeerSet) Close() {
 		p.peer.Disconnect(p2p.DiscQuitting)
 	}
 	ps.peers = make(map[string]*Peer)
+}
+
+// RemoteAddr는 피어의 원격 주소를 반환합니다.
+func (p *Peer) RemoteAddr() net.Addr {
+	return p.peer.RemoteAddr()
+}
+
+// ConnectedTime은 피어의 연결 시간을 반환합니다.
+func (p *Peer) ConnectedTime() time.Time {
+	// 현재는 단순히 현재 시간을 반환합니다.
+	// 실제 구현에서는 피어가 연결된 시간을 저장하고 반환해야 합니다.
+	return time.Now()
+}
+
+// Latency는 피어의 지연 시간을 반환합니다.
+func (p *Peer) Latency() time.Duration {
+	// 현재는 단순히 기본값을 반환합니다.
+	// 실제 구현에서는 피어의 실제 지연 시간을 측정하고 반환해야 합니다.
+	return 100 * time.Millisecond
+}
+
+// IsInbound는 피어가 인바운드 연결인지 여부를 반환합니다.
+func (p *Peer) IsInbound() bool {
+	// 현재는 단순히 false를 반환합니다.
+	// 실제 구현에서는 피어의 연결 방향을 확인하고 반환해야 합니다.
+	return false
 } 

@@ -22,11 +22,13 @@ import (
 	"io"
 	"math/big"
 	"sync"
+	"time"
 
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/zenanetwork/go-zenanet/common"
 	"github.com/zenanetwork/go-zenanet/consensus"
 	"github.com/zenanetwork/go-zenanet/consensus/eirene/utils"
+	"github.com/zenanetwork/go-zenanet/consensus/eirene/validator"
 	"github.com/zenanetwork/go-zenanet/core"
 	"github.com/zenanetwork/go-zenanet/core/state"
 	"github.com/zenanetwork/go-zenanet/core/types"
@@ -71,7 +73,7 @@ const (
 	diffNoTurn = 1
 
 	// 기본 블록 생성 주기 (초)
-	defaultPeriod = 15
+	defaultPeriod = 4
 )
 
 // Eirene PoS 프로토콜 상수
@@ -170,6 +172,9 @@ type Eirene struct {
 
 	// 성능 최적화
 	performanceOptimizer *PerformanceOptimizer // 성능 최적화 모듈
+	blockTimeOptimizer  *BlockTimeOptimizer    // 블록 시간 최적화 모듈
+	validatorSelector   *validator.ValidatorSelector // 검증자 선택 모듈
+	bft                 *ByzantineFaultTolerance // 비잔틴 내결함성 모듈
 
 	// 로거
 	logger log.Logger
@@ -204,33 +209,79 @@ type SignerFn func(signer common.Address, hash []byte) ([]byte, error)
 // 필요한 데이터 구조를 설정합니다. 실제 구현에서는 거버넌스, 스테이킹, ABCI 어댑터 등을
 // 적절히 초기화해야 합니다.
 func New(config *params.EireneConfig, db ethdb.Database) *Eirene {
-	// 시그니처 캐시 생성
+	// 캐시 초기화
 	signatures, _ := lru.NewARC(inmemorySignatures)
 
-	// 로거 설정
-	logger := log.New("module", "eirene")
-
-	// 설정 복사 및 기본값 설정
-	configCopy := *config
-	if configCopy.Period == 0 {
-		configCopy.Period = 15 // 기본 Period 값
+	// 기본 설정 값 설정
+	if config == nil {
+		config = &params.EireneConfig{
+			Period: defaultPeriod,
+			Epoch:  uint64(defaultEpochLength),
+		}
 	}
-	if configCopy.Epoch == 0 {
-		configCopy.Epoch = 30000 // 기본 Epoch 값
+
+	// 블록 시간 최적화 모듈 설정
+	blockTimeOptimizerConfig := &BlockTimeOptimizerConfig{
+		DefaultBlockTime:        config.Period,
+		MinBlockTime:            2,  // 최소 2초
+		MaxBlockTime:            8,  // 최대 8초
+		AdjustmentInterval:      100, // 100블록마다 조정
+		AdjustmentFactor:        0.2, // 20% 조정
+		NetworkLoadThreshold:    0.8, // 80% 네트워크 부하 임계값
+		TxThroughputThreshold:   1000, // 1000 TPS 임계값
+		ValidatorPerformanceMin: 0.7, // 70% 최소 검증자 성능
+		HistorySize:             1000, // 1000개 블록 히스토리
+	}
+
+	// 검증자 선택 모듈 설정
+	validatorSelectorConfig := &validator.ValidatorSelectorConfig{
+		MaxValidators:        100,
+		MinVotingPower:       big.NewInt(1000),
+		PerformanceWeight:    0.3,
+		RandomnessWeight:     0.2,
+		StakeWeight:          0.4,
+		HistoricalWeight:     0.1,
+		MissedBlockPenalty:   0.1,
+		LatePropagationPenalty: 0.05,
+		PerformanceDecay:     0.95,
+		RandomSeed:           time.Now().UnixNano(),
+		HistorySize:          1000,
+		HistoryDecay:         0.9,
+	}
+
+	// 비잔틴 내결함성 모듈 설정
+	bftConfig := ByzantineFaultToleranceConfig{
+		MaxFaultyValidators:     33, // 최대 33개의 비잔틴 검증자 허용
+		ConsensusThreshold:      0.67, // 2/3 합의 임계값
+		VoteCollectionTimeout:   10 * time.Second,
+		EvidenceExpiryBlocks:    100000, // 약 2주 (15초 블록 기준)
+		MaxEvidencePerBlock:     50,
+		DoubleSignSlashAmount:   new(big.Int).Mul(big.NewInt(100), big.NewInt(1e18)), // 100 토큰
+		DowntimeSlashAmount:     new(big.Int).Mul(big.NewInt(10), big.NewInt(1e18)), // 10 토큰
+		PrecommitWaitTime:       1 * time.Second,
+		PrecommitResendInterval: 500 * time.Millisecond,
+		BlockVerificationTimeout: 5 * time.Second,
+		BlockVerificationRetries: 3,
 	}
 
 	// Eirene 인스턴스 생성
-	eirene := &Eirene{
-		config:     &configCopy,
-		db:         db,
-		recents:    newRecentBlocks(),
-		signatures: signatures,
-		proposals:  make(map[common.Address]bool),
-		eventFeed:  new(event.Feed),
-		logger:     logger,
+	e := &Eirene{
+		config:             config,
+		db:                 db,
+		recents:            newRecentBlocks(),
+		signatures:         signatures,
+		proposals:          make(map[common.Address]bool),
+		eventFeed:          new(event.Feed),
+		blockTimeOptimizer: NewBlockTimeOptimizer(blockTimeOptimizerConfig),
+		validatorSelector:  validator.NewValidatorSelector(validatorSelectorConfig),
+		bft:                NewByzantineFaultTolerance(bftConfig),
+		logger:             log.New("module", "eirene"),
 	}
 
-	return eirene
+	// 성능 최적화 모듈 초기화
+	e.performanceOptimizer = NewPerformanceOptimizer()
+
+	return e
 }
 
 // Author는 주어진 블록을 채굴한 계정의 Zenanet 주소를 검색합니다.
@@ -263,6 +314,12 @@ func (e *Eirene) Author(header *types.Header) (common.Address, error) {
 // 호출하여 실제 검증 작업을 수행합니다. 검증 과정에서는 블록 번호, 체인 구성, 캐스케이딩 필드 등을
 // 확인합니다. 검증에 실패하면 적절한 오류를 반환합니다.
 func (e *Eirene) VerifyHeader(chain consensus.ChainHeaderReader, header *types.Header, seal bool) error {
+	// 비잔틴 내결함성 모듈을 사용하여 블록 헤더 검증
+	if err := e.bft.verifyBlockHeader(chain, header); err != nil {
+		return err
+	}
+	
+	// 기존 검증 로직 수행
 	return e.verifyHeader(chain, header, nil)
 }
 
@@ -361,6 +418,11 @@ func (e *Eirene) verifyCascadingFields(chain consensus.ChainHeaderReader, header
 // 엉클 블록을 사용하지 않으므로, 엉클 배열이 비어 있지 않으면 오류를 반환합니다. 이 함수는 블록 검증
 // 과정에서 호출됩니다.
 func (e *Eirene) VerifyUncles(chain consensus.ChainReader, block *types.Block) error {
+	// 비잔틴 내결함성 모듈을 사용하여 블록 검증
+	if err := e.bft.VerifyBlock(chain, block); err != nil {
+		return err
+	}
+	
 	// Eirene에서는 uncle이 허용되지 않음
 	if len(block.Uncles()) > 0 {
 		return errors.New("uncles not allowed")
@@ -368,34 +430,30 @@ func (e *Eirene) VerifyUncles(chain consensus.ChainReader, block *types.Block) e
 	return nil
 }
 
-// Prepare는 특정 엔진의 규칙에 따라 블록 헤더의 합의 필드를 초기화합니다.
-//
-// 매개변수:
-//   - chain: 체인 헤더 리더 인터페이스
-//   - header: 준비할 블록 헤더
-//
-// 반환값:
-//   - error: 준비 실패 시 오류 반환, 성공 시 nil 반환
-//
-// 이 함수는 새 블록을 생성하기 전에 블록 헤더의 합의 관련 필드를 초기화합니다.
-// 부모 블록을 확인하고, 난이도를 계산하며, 코인베이스, 믹스 다이제스트, 논스 등의
-// 필드를 설정합니다. 부모 블록을 찾을 수 없는 경우 오류를 반환합니다.
-// 이 함수는 블록 생성 과정에서 호출됩니다.
+// Prepare implements consensus.Engine, preparing all the consensus fields of the
+// header for running the transactions on top.
 func (e *Eirene) Prepare(chain consensus.ChainHeaderReader, header *types.Header) error {
-	// 헤더 번호가 있는지 확인
-	number := header.Number.Uint64()
+	// 체인 컨텍스트 설정
+	e.chain = chain
 
 	// 부모 블록 가져오기
-	parent := chain.GetHeader(header.ParentHash, number-1)
+	parent := chain.GetHeader(header.ParentHash, header.Number.Uint64()-1)
 	if parent == nil {
 		return consensus.ErrUnknownAncestor
 	}
 
-	// 타임스탬프 설정
+	// 블록 시간 최적화 적용
+	optimizedBlockTime := e.blockTimeOptimizer.OptimizeBlockTime(header.Number.Uint64())
+	
+	// 헤더 시간 설정 (부모 블록 시간 + 최적화된 블록 시간)
+	header.Time = parent.Time + optimizedBlockTime
+
+	// 블록 시간 기록
+	e.blockTimeOptimizer.RecordBlockTime(optimizedBlockTime)
+
+	// 기타 헤더 필드 설정
 	header.Difficulty = e.CalcDifficulty(chain, header.Time, parent)
-	header.Coinbase = common.Address{}
-	header.MixDigest = common.Hash{}
-	header.Nonce = types.BlockNonce{}
+	header.Coinbase = e.signer
 
 	return nil
 }
@@ -539,35 +597,14 @@ func (e *Eirene) SealHash(header *types.Header) common.Hash {
 	return SealHash(header)
 }
 
-// CalcDifficulty는 난이도 조정 알고리즘입니다. 새 블록이 가져야 할 난이도를 반환합니다.
-//
-// 매개변수:
-//   - chain: 체인 헤더 리더 인터페이스
-//   - time: 새 블록의 타임스탬프
-//   - parent: 부모 블록 헤더
-//
-// 반환값:
-//   - *big.Int: 계산된 난이도
-//
-// 이 함수는 새 블록의 난이도를 계산합니다. Eirene는 PoS 합의 알고리즘으로, 난이도는 검증자 선택에
-// 사용되지 않으므로, 현재 구현에서는 간단히 1을 반환합니다. 실제 구현에서는 검증자 순서에 따라
-// 난이도를 조정할 수 있습니다. 이 함수는 블록 생성 과정에서 호출됩니다.
+// CalcDifficulty is the difficulty adjustment algorithm. It returns the difficulty
+// that a new block should have.
 func (e *Eirene) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
 	// 현재는 간단한 난이도 계산만 구현
 	return big.NewInt(1)
 }
 
-// APIs는 합의 엔진에서 제공하는 RPC API를 반환합니다.
-//
-// 매개변수:
-//   - chain: 체인 헤더 리더 인터페이스
-//
-// 반환값:
-//   - []rpc.API: RPC API 배열
-//
-// 이 함수는 Eirene 합의 엔진에서 제공하는 RPC API를 반환합니다. 현재 구현에서는 기본 Eirene API만
-// 제공하지만, 실제 구현에서는 스테이킹 API, 거버넌스 API 등 더 많은 API를 제공해야 합니다.
-// 이 함수는 노드 시작 시 호출되어 사용 가능한 API를 등록합니다.
+// APIs는 RPC 서비스를 위한 API 목록을 반환합니다.
 func (e *Eirene) APIs(chain consensus.ChainHeaderReader) []rpc.API {
 	return []rpc.API{
 		{
@@ -576,8 +613,27 @@ func (e *Eirene) APIs(chain consensus.ChainHeaderReader) []rpc.API {
 			Service:   &API{chain: chain, eirene: e},
 			Public:    false,
 		},
-		// 참고: 실제 구현에서는 스테이킹 API와 거버넌스 API를 추가해야 합니다.
-		// 여기서는 임시로 이 부분을 생략합니다.
+		// 블록 시간 최적화 API 추가
+		{
+			Namespace: "eirene",
+			Version:   "1.0",
+			Service:   &BlockTimeOptimizerAPI{eirene: e},
+			Public:    false,
+		},
+		// 검증자 선택 API 추가
+		{
+			Namespace: "eirene",
+			Version:   "1.0",
+			Service:   &ValidatorSelectorAPI{eirene: e},
+			Public:    false,
+		},
+		// 비잔틴 내결함성 API 추가
+		{
+			Namespace: "eirene",
+			Version:   "1.0",
+			Service:   &ByzantineFaultToleranceAPI{eirene: e},
+			Public:    false,
+		},
 	}
 }
 
@@ -1000,7 +1056,40 @@ func (e *Eirene) processIBCPackets(blockNumber uint64, timestamp uint64) error {
 
 // reportDoubleSign은 이중 서명을 신고합니다.
 func (e *Eirene) reportDoubleSign(reporter common.Address, evidence DoubleSignEvidence) error {
-	// 구현
+	// 비잔틴 내결함성 모듈에 증거 제출
+	byzEvidence := &ByzantineEvidence{
+		Type:         "DoubleSign",
+		Validator:    evidence.ValidatorAddress,
+		BlockNumber:  evidence.Height,
+		BlockHash:    evidence.BlockHash,
+		Timestamp:    time.Now(),
+		Evidence:     evidence.Evidence,
+		ReporterAddr: reporter,
+	}
+	
+	if !e.bft.SubmitEvidence(byzEvidence) {
+		return errors.New("failed to submit double sign evidence")
+	}
+	
+	// 증거 검증
+	evidenceHash := common.BytesToHash(evidence.Evidence)
+	if !e.bft.VerifyEvidence(evidenceHash) {
+		return errors.New("failed to verify double sign evidence")
+	}
+	
+	// 슬래싱 실행
+	if !e.bft.ExecuteSlashing(evidenceHash) {
+		return errors.New("failed to execute slashing for double sign")
+	}
+	
+	// 스테이킹 어댑터가 있는 경우 해당 어댑터를 통해 슬래싱 처리
+	if slashingAdapter, ok := e.stakingAdapter.(interface{ ReportCoreDoubleSign(common.Address, *DoubleSignEvidence) error }); ok {
+		if err := slashingAdapter.ReportCoreDoubleSign(reporter, &evidence); err != nil {
+			e.logger.Warn("Failed to report double sign to staking adapter", "error", err)
+			// 비잔틴 내결함성 모듈에서 이미 처리했으므로 오류를 반환하지 않음
+		}
+	}
+	
 	return nil
 }
 
@@ -1271,3 +1360,170 @@ func (e *Eirene) SetChainContext(chain consensus.ChainHeaderReader, currentBlock
 		stateAt,
 	)
 }
+
+// SelectNextProposer는 다음 블록 생성자를 선택합니다.
+func (e *Eirene) SelectNextProposer(blockNumber uint64, parentHash common.Hash) (common.Address, error) {
+	// 활성 검증자 목록 가져오기
+	validators := e.stakingAdapter.GetActiveValidators()
+	if len(validators) == 0 {
+		return common.Address{}, errors.New("no active validators")
+	}
+	
+	// 검증자 선택기를 사용하여 다음 블록 생성자 선택
+	proposer := e.validatorSelector.SelectNextProposer(validators, blockNumber, parentHash)
+	if proposer == nil {
+		return common.Address{}, errors.New("failed to select proposer")
+	}
+	
+	return proposer.GetAddress(), nil
+}
+
+// SelectValidatorsForCommittee는 위원회 검증자를 선택합니다.
+func (e *Eirene) SelectValidatorsForCommittee(blockNumber uint64, parentHash common.Hash, committeeSize int) ([]common.Address, error) {
+	// 활성 검증자 목록 가져오기
+	validators := e.stakingAdapter.GetActiveValidators()
+	if len(validators) == 0 {
+		return nil, errors.New("no active validators")
+	}
+	
+	// 검증자 선택기를 사용하여 위원회 검증자 선택
+	committee := e.validatorSelector.SelectValidatorsForCommittee(validators, blockNumber, parentHash, committeeSize)
+	
+	// 주소 목록으로 변환
+	addresses := make([]common.Address, len(committee))
+	for i, validator := range committee {
+		addresses[i] = validator.GetAddress()
+	}
+	
+	return addresses, nil
+}
+
+// UpdateValidatorPerformance는 검증자의 성능 통계를 업데이트합니다.
+func (e *Eirene) UpdateValidatorPerformance(address common.Address, missedBlock bool, propagationTime time.Duration) {
+	e.validatorSelector.UpdateValidatorPerformance(address, missedBlock, propagationTime)
+}
+
+// GetValidatorPerformance는 검증자의 성능 통계를 반환합니다.
+func (e *Eirene) GetValidatorPerformance(address common.Address) *validator.ValidatorPerformance {
+	return e.validatorSelector.GetValidatorPerformance(address)
+}
+
+// GetAllValidatorPerformances는 모든 검증자의 성능 통계를 반환합니다.
+func (e *Eirene) GetAllValidatorPerformances() map[common.Address]*validator.ValidatorPerformance {
+	return e.validatorSelector.GetAllValidatorPerformances()
+}
+
+// ResetValidatorPerformance는 검증자의 성능 통계를 초기화합니다.
+func (e *Eirene) ResetValidatorPerformance(address common.Address) {
+	e.validatorSelector.ResetValidatorPerformance(address)
+}
+
+// BlockTimeOptimizerAPI는 블록 시간 최적화 관련 RPC API를 제공합니다.
+type BlockTimeOptimizerAPI struct {
+	eirene *Eirene
+}
+
+// GetBlockTimeStats는 블록 시간 통계를 반환합니다.
+func (api *BlockTimeOptimizerAPI) GetBlockTimeStats() map[string]interface{} {
+	return api.eirene.blockTimeOptimizer.GetBlockTimeStats()
+}
+
+// GetOptimalBlockTime은 현재 최적의 블록 생성 시간을 반환합니다.
+func (api *BlockTimeOptimizerAPI) GetOptimalBlockTime() uint64 {
+	return api.eirene.blockTimeOptimizer.GetOptimalBlockTime()
+}
+
+// UpdateBlockTimeConfig는 블록 시간 최적화 설정을 업데이트합니다.
+func (api *BlockTimeOptimizerAPI) UpdateBlockTimeConfig(config *BlockTimeOptimizerConfig) bool {
+	// 설정 업데이트
+	api.eirene.blockTimeOptimizer = NewBlockTimeOptimizer(config)
+	
+	// Eirene 설정에 적용
+	api.eirene.blockTimeOptimizer.ApplyToConfig(api.eirene.config)
+	
+	return true
+}
+
+// ValidatorSelectorAPI는 검증자 선택 관련 RPC API를 제공합니다.
+type ValidatorSelectorAPI struct {
+	eirene *Eirene
+}
+
+// GetValidatorPerformance는 검증자의 성능 통계를 반환합니다.
+func (api *ValidatorSelectorAPI) GetValidatorPerformance(address common.Address) map[string]interface{} {
+	stats := api.eirene.GetValidatorPerformance(address)
+	if stats == nil {
+		return nil
+	}
+	
+	return map[string]interface{}{
+		"address":           stats.Address,
+		"performanceScore":  stats.PerformanceScore,
+		"blocksProposed":    stats.BlocksProposed,
+		"blocksMissed":      stats.BlocksMissed,
+		"avgPropagationTime": stats.AvgPropagationTime,
+		"lastSelected":      stats.LastSelected,
+		"selectionCount":    stats.SelectionCount,
+	}
+}
+
+// GetAllValidatorPerformances는 모든 검증자의 성능 통계를 반환합니다.
+func (api *ValidatorSelectorAPI) GetAllValidatorPerformances() map[string]interface{} {
+	allStats := api.eirene.GetAllValidatorPerformances()
+	result := make(map[string]interface{})
+	
+	for addr, stats := range allStats {
+		result[addr.Hex()] = map[string]interface{}{
+			"performanceScore":  stats.PerformanceScore,
+			"blocksProposed":    stats.BlocksProposed,
+			"blocksMissed":      stats.BlocksMissed,
+			"avgPropagationTime": stats.AvgPropagationTime,
+			"lastSelected":      stats.LastSelected,
+			"selectionCount":    stats.SelectionCount,
+		}
+	}
+	
+	return result
+}
+
+// ByzantineFaultToleranceAPI는 비잔틴 내결함성 관련 RPC API를 제공합니다.
+type ByzantineFaultToleranceAPI struct {
+	eirene *Eirene
+}
+
+// GetFaultyValidators는 비잔틴 검증자 목록을 반환합니다.
+func (api *ByzantineFaultToleranceAPI) GetFaultyValidators() map[string]int {
+	faultyValidators := api.eirene.bft.GetFaultyValidators()
+	result := make(map[string]int)
+	
+	for addr, count := range faultyValidators {
+		result[addr.Hex()] = count
+	}
+	
+	return result
+}
+
+// GetEvidenceCount는 증거 수를 반환합니다.
+func (api *ByzantineFaultToleranceAPI) GetEvidenceCount() int {
+	return api.eirene.bft.GetEvidenceCount()
+}
+
+// ReportDoubleSign은 이중 서명을 신고합니다.
+func (api *ByzantineFaultToleranceAPI) ReportDoubleSign(
+	validator common.Address,
+	blockNumber uint64,
+	blockHash common.Hash,
+	evidence []byte,
+) bool {
+	doubleSignEvidence := DoubleSignEvidence{
+		ValidatorAddress: validator,
+		Height:           blockNumber,
+		BlockHash:        blockHash,
+		Evidence:         evidence,
+		Timestamp:        time.Now(),
+	}
+	
+	err := api.eirene.reportDoubleSign(api.eirene.signer, doubleSignEvidence)
+	return err == nil
+}
+

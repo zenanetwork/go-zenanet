@@ -110,4 +110,197 @@ logger.Info("Operation completed", "key", value)
 
 - 성능 병목 지점을 식별하기 위해 프로파일링을 수행합니다.
 - 메모리 사용량을 최적화하기 위해 불필요한 할당을 피합니다.
-- 동시성 이슈를 방지하기 위해 적절한 동기화 메커니즘을 사용합니다. 
+- 동시성 이슈를 방지하기 위해 적절한 동기화 메커니즘을 사용합니다.
+
+## CLI 도구 사용 방법
+
+Eirene CLI 도구는 개발 및 테스트를 위한 다양한 명령어를 제공합니다. 주요 명령어는 다음과 같습니다:
+
+### 노드 관리
+
+```bash
+# 노드 시작
+eirene node start --home=<노드_홈_디렉토리>
+
+# 노드 상태 확인
+eirene node status
+
+# 노드 중지
+eirene node stop
+
+# 노드 초기화
+eirene node init --chain-id=<체인_ID> --home=<노드_홈_디렉토리>
+
+# 노드 리셋
+eirene node reset --home=<노드_홈_디렉토리>
+```
+
+### 계정 관리
+
+```bash
+# 계정 생성
+eirene account create --name=<계정_이름>
+
+# 계정 목록 조회
+eirene account list
+
+# 계정 정보 조회
+eirene account show --name=<계정_이름>
+
+# 계정 복구
+eirene account recover --name=<계정_이름> --mnemonic="<니모닉_단어>"
+
+# 계정 삭제
+eirene account delete --name=<계정_이름>
+```
+
+### 트랜잭션 관리
+
+```bash
+# 토큰 전송
+eirene tx send --from=<보내는_계정> --to=<받는_주소> --amount=<금액>
+
+# 트랜잭션 조회
+eirene tx show --hash=<트랜잭션_해시>
+
+# 트랜잭션 브로드캐스트
+eirene tx broadcast --file=<트랜잭션_파일>
+
+# 트랜잭션 서명
+eirene tx sign --from=<서명_계정> --file=<트랜잭션_파일>
+```
+
+### 스테이킹 관리
+
+```bash
+# 검증자 생성
+eirene staking create-validator --from=<계정_이름> --amount=<스테이킹_금액> --pubkey=<검증자_공개키>
+
+# 토큰 위임
+eirene staking delegate --from=<계정_이름> --validator=<검증자_주소> --amount=<위임_금액>
+
+# 위임 취소
+eirene staking unbond --from=<계정_이름> --validator=<검증자_주소> --amount=<취소_금액>
+
+# 재위임
+eirene staking redelegate --from=<계정_이름> --src-validator=<원본_검증자> --dst-validator=<대상_검증자> --amount=<재위임_금액>
+
+# 보상 인출
+eirene staking withdraw-rewards --from=<계정_이름> --validator=<검증자_주소>
+```
+
+### 거버넌스 관리
+
+```bash
+# 제안 생성
+eirene governance submit-proposal --from=<계정_이름> --type=<제안_유형> --title=<제안_제목> --description=<제안_설명> --deposit=<초기_예치금>
+
+# 제안 조회
+eirene governance query-proposal --proposal-id=<제안_ID>
+
+# 제안 목록 조회
+eirene governance list-proposals
+
+# 투표
+eirene governance vote --from=<계정_이름> --proposal-id=<제안_ID> --option=<투표_옵션>
+
+# 예치금 추가
+eirene governance deposit --from=<계정_이름> --proposal-id=<제안_ID> --amount=<예치금_금액>
+
+# 거버넌스 파라미터 조회
+eirene governance params
+
+# 투표 집계 결과 조회
+eirene governance tally --proposal-id=<제안_ID>
+```
+
+### 네트워크 모니터링
+
+```bash
+# 블록 조회
+eirene network block --height=<블록_높이>
+
+# 최신 블록 조회
+eirene network latest-block
+
+# 검증자 목록 조회
+eirene network validators
+
+# 네트워크 상태 조회
+eirene network status
+
+# 피어 목록 조회
+eirene network peers
+
+# 트랜잭션 검색
+eirene network tx-search --query=<검색_쿼리>
+```
+
+### 버전 정보
+
+```bash
+# 버전 정보 표시
+eirene version
+
+# 상세 버전 정보 표시
+eirene version --detailed
+```
+
+## 고급 개발 주제
+
+### 성능 프로파일링
+
+성능 최적화를 위해 다음과 같은 프로파일링 도구를 사용할 수 있습니다:
+
+```bash
+# CPU 프로파일링
+go tool pprof http://localhost:6060/debug/pprof/profile
+
+# 메모리 프로파일링
+go tool pprof http://localhost:6060/debug/pprof/heap
+
+# 블록 트레이싱
+eirene debug trace-block --height=<블록_높이> --output=<출력_파일>
+```
+
+### 병렬 처리 최적화
+
+트랜잭션 처리 성능을 향상시키기 위해 다음과 같은 병렬 처리 기법을 사용합니다:
+
+1. **트랜잭션 의존성 분석**: 서로 독립적인 트랜잭션을 식별하여 병렬로 처리합니다.
+2. **워커 풀 최적화**: 시스템 리소스에 따라 워커 풀 크기를 동적으로 조정합니다.
+3. **배치 처리**: 유사한 작업을 그룹화하여 배치로 처리합니다.
+
+### 커스텀 모듈 개발
+
+Eirene 합의 알고리즘에 새로운 모듈을 추가하는 방법:
+
+1. 적절한 디렉토리에 새 패키지 생성
+2. 필요한 인터페이스 구현
+3. 모듈 등록 및 초기화 코드 작성
+4. 단위 테스트 및 통합 테스트 작성
+5. 문서화
+
+## 문제 해결
+
+### 일반적인 문제
+
+- **노드 연결 문제**: 방화벽 설정, P2P 포트 확인, 피어 주소 확인
+- **합의 참여 문제**: 검증자 등록 상태, 스테이킹 금액, 프라이빗 키 확인
+- **트랜잭션 실패**: 가스 설정, 계정 잔액, 서명 확인
+- **성능 저하**: 디스크 I/O, 메모리 사용량, CPU 사용량 확인
+
+### 디버깅 도구
+
+- **로그 분석**: `eirene node logs --tail=100`
+- **상태 덤프**: `eirene debug dump-state --height=<블록_높이>`
+- **메모리 덤프**: `eirene debug dump-memory`
+- **트레이스 활성화**: `eirene node start --trace`
+
+## 추가 자료
+
+- [API 문서](../docs/api.md)
+- [아키텍처 문서](../docs/architecture.md)
+- [성능 최적화 가이드](../docs/performance.md)
+- [보안 가이드](../docs/security.md)
+- [테스트 가이드](../docs/testing.md) 
