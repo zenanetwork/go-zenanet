@@ -60,7 +60,14 @@ var (
 		ShanghaiTime:            newUint64(1681338455),
 		CancunTime:              newUint64(1710338135),
 		DepositContractAddress:  common.HexToAddress("0x00000000219ab540356cbb839cbe05303d7705fa"),
-		Ethash:                  new(EthashConfig),
+		Ethash:                  nil, // Ethash 대신 Eirene 사용
+		Eirene: &EireneConfig{
+			Period:             4,     // 4초마다 블록 생성
+			Epoch:              30000, // 약 33시간마다 에포크 변경
+			SlashingThreshold:  100,   // 검증자 제거를 고려하는 슬래싱 포인트 임계값
+			SlashingRate:       10,    // 슬래싱 시 스테이킹 감소 비율 (1/1000 단위)
+			MissedBlockPenalty: 1,     // 블록 생성 실패 시 부과되는 슬래싱 포인트
+		},
 		BlobScheduleConfig: &BlobScheduleConfig{
 			Cancun: DefaultCancunBlobConfig,
 		},
@@ -89,7 +96,14 @@ var (
 		CancunTime:              newUint64(1707305664),
 		PragueTime:              newUint64(1740434112),
 		DepositContractAddress:  common.HexToAddress("0x4242424242424242424242424242424242424242"),
-		Ethash:                  new(EthashConfig),
+		Ethash:                  nil,
+		Eirene: &EireneConfig{
+			Period:             4,     // 4초마다 블록 생성
+			Epoch:              30000, // 약 33시간마다 에포크 변경
+			SlashingThreshold:  100,   // 검증자 제거를 고려하는 슬래싱 포인트 임계값
+			SlashingRate:       10,    // 슬래싱 시 스테이킹 감소 비율 (1/1000 단위)
+			MissedBlockPenalty: 1,     // 블록 생성 실패 시 부과되는 슬래싱 포인트
+		},
 		BlobScheduleConfig: &BlobScheduleConfig{
 			Cancun: DefaultCancunBlobConfig,
 			Prague: DefaultPragueBlobConfig,
@@ -119,7 +133,14 @@ var (
 		CancunTime:              newUint64(1706655072),
 		PragueTime:              newUint64(1741159776),
 		DepositContractAddress:  common.HexToAddress("0x7f02c3e3c98b133055b8b348b2ac625669ed295d"),
-		Ethash:                  new(EthashConfig),
+		Ethash:                  nil,
+		Eirene: &EireneConfig{
+			Period:             4,     // 4초마다 블록 생성
+			Epoch:              30000, // 약 33시간마다 에포크 변경
+			SlashingThreshold:  100,   // 검증자 제거를 고려하는 슬래싱 포인트 임계값
+			SlashingRate:       10,    // 슬래싱 시 스테이킹 감소 비율 (1/1000 단위)
+			MissedBlockPenalty: 1,     // 블록 생성 실패 시 부과되는 슬래싱 포인트
+		},
 		BlobScheduleConfig: &BlobScheduleConfig{
 			Cancun: DefaultCancunBlobConfig,
 			Prague: DefaultPragueBlobConfig,
@@ -236,8 +257,15 @@ var (
 		OsakaTime:               nil,
 		VerkleTime:              nil,
 		TerminalTotalDifficulty: big.NewInt(math.MaxInt64),
-		Ethash:                  new(EthashConfig),
+		Ethash:                  nil,
 		Clique:                  nil,
+		Eirene: &EireneConfig{
+			Period:             4,     // 4초마다 블록 생성
+			Epoch:              30000, // 약 33시간마다 에포크 변경
+			SlashingThreshold:  100,   // 검증자 제거를 고려하는 슬래싱 포인트 임계값
+			SlashingRate:       10,    // 슬래싱 시 스테이킹 감소 비율 (1/1000 단위)
+			MissedBlockPenalty: 1,     // 블록 생성 실패 시 부과되는 슬래싱 포인트
+		},
 	}
 
 	// MergedTestChainConfig contains every protocol change (EIPs) introduced
@@ -266,8 +294,15 @@ var (
 		OsakaTime:               nil,
 		VerkleTime:              nil,
 		TerminalTotalDifficulty: big.NewInt(0),
-		Ethash:                  new(EthashConfig),
+		Ethash:                  nil,
 		Clique:                  nil,
+		Eirene: &EireneConfig{
+			Period:             4,     // 4초마다 블록 생성
+			Epoch:              30000, // 약 33시간마다 에포크 변경
+			SlashingThreshold:  100,   // 검증자 제거를 고려하는 슬래싱 포인트 임계값
+			SlashingRate:       10,    // 슬래싱 시 스테이킹 감소 비율 (1/1000 단위)
+			MissedBlockPenalty: 1,     // 블록 생성 실패 시 부과되는 슬래싱 포인트
+		},
 		BlobScheduleConfig: &BlobScheduleConfig{
 			Cancun: DefaultCancunBlobConfig,
 			Prague: DefaultPragueBlobConfig,
@@ -300,8 +335,15 @@ var (
 		OsakaTime:               nil,
 		VerkleTime:              nil,
 		TerminalTotalDifficulty: big.NewInt(math.MaxInt64),
-		Ethash:                  new(EthashConfig),
+		Ethash:                  nil,
 		Clique:                  nil,
+		Eirene: &EireneConfig{
+			Period:             4,     // 4초마다 블록 생성
+			Epoch:              30000, // 약 33시간마다 에포크 변경
+			SlashingThreshold:  100,   // 검증자 제거를 고려하는 슬래싱 포인트 임계값
+			SlashingRate:       10,    // 슬래싱 시 스테이킹 감소 비율 (1/1000 단위)
+			MissedBlockPenalty: 1,     // 블록 생성 실패 시 부과되는 슬래싱 포인트
+		},
 	}
 	TestRules = TestChainConfig.Rules(new(big.Int), false, 0)
 )
@@ -453,6 +495,8 @@ func (c *ChainConfig) Description() string {
 		banner += "Consensus: Beacon (proof-of-stake), merged from Ethash (proof-of-work)\n"
 	case c.Clique != nil:
 		banner += "Consensus: Beacon (proof-of-stake), merged from Clique (proof-of-authority)\n"
+	case c.Eirene != nil:
+		banner += "Consensus: Eirene (proof-of-stake)\n"
 	default:
 		banner += "Consensus: unknown\n"
 	}

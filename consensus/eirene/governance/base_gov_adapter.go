@@ -61,6 +61,7 @@ type BaseGovernanceAdapter struct {
 	vetoThresholdFloat float64               // 거부권 임계값
 	proposals          map[uint64]*GovProposal // 제안 목록
 	nextProposalID     uint64                // 다음 제안 ID
+	voteTallyOptimizer *VoteTallyOptimizer   // 투표 집계 최적화기
 }
 
 // NewBaseGovernanceAdapter는 새로운 BaseGovernanceAdapter 인스턴스를 생성합니다.
@@ -77,19 +78,23 @@ type BaseGovernanceAdapter struct {
 // 제안 및 투표 관리를 위한 데이터 구조를 초기화합니다.
 // 이 기본 어댑터는 GovAdapter와 CosmosGovAdapter의 기반이 됩니다.
 func NewBaseGovernanceAdapter(eirene EireneInterface, db ethdb.Database, logger log.Logger) *BaseGovernanceAdapter {
-	return &BaseGovernanceAdapter{
+	// 기본값 설정
+	adapter := &BaseGovernanceAdapter{
 		eirene:             eirene,
 		logger:             logger,
 		db:                 db,
-		minDeposit:         new(big.Int).Mul(big.NewInt(100), big.NewInt(1e18)), // 100 토큰
-		maxDepositPeriod:   14 * 24 * time.Hour,                                 // 14일
-		votingPeriod:       14 * 24 * time.Hour,                                 // 14일
-		quorumFloat:        0.334,                                               // 33.4%
-		thresholdFloat:     0.5,                                                 // 50%
-		vetoThresholdFloat: 0.334,                                               // 33.4%
+		minDeposit:         new(big.Int).Mul(big.NewInt(10), big.NewInt(1e18)), // 10 토큰
+		maxDepositPeriod:   time.Hour * 24 * 14,                                // 2주
+		votingPeriod:       time.Hour * 24 * 14,                                // 2주
+		quorumFloat:        0.334,                                              // 33.4%
+		thresholdFloat:     0.5,                                                // 50%
+		vetoThresholdFloat: 0.334,                                              // 33.4%
 		proposals:          make(map[uint64]*GovProposal),
 		nextProposalID:     1,
+		voteTallyOptimizer: NewVoteTallyOptimizer(4, 100, 1000, time.Hour), // 워커 수, 배치 크기, 캐시 크기, 캐시 만료 시간
 	}
+
+	return adapter
 }
 
 // GetProposal은 제안 정보를 반환합니다.
@@ -152,87 +157,27 @@ func (a *BaseGovernanceAdapter) activateVotingPeriod(proposal *GovProposal) {
 
 // tallyVotes는 제안에 대한 투표를 집계하고 통과 여부를 반환합니다.
 func (a *BaseGovernanceAdapter) tallyVotes(proposal *GovProposal) bool {
-	// 투표 수 집계
-	totalVotes := big.NewInt(0)
-	yesVotes := big.NewInt(0)
-	noVotes := big.NewInt(0)
-	noWithVetoVotes := big.NewInt(0)
-	abstainVotes := big.NewInt(0)
-
-	// 각 투표자의 스테이킹 양에 따라 투표 가중치 계산
-	for _, vote := range proposal.Votes {
-		// 투표자의 스테이킹 양 가져오기 (실제로는 스테이킹 어댑터에서 가져와야 함)
-		// 여기서는 간단히 모든 투표자가 동일한 가중치를 가진다고 가정
-		weight := big.NewInt(1)
-		totalVotes.Add(totalVotes, weight)
-
-		switch vote.Option {
-		case GovOptionYes:
-			yesVotes.Add(yesVotes, weight)
-		case GovOptionNo:
-			noVotes.Add(noVotes, weight)
-		case GovOptionNoWithVeto:
-			noWithVetoVotes.Add(noWithVetoVotes, weight)
-		case GovOptionAbstain:
-			abstainVotes.Add(abstainVotes, weight)
-		}
-	}
-
 	// 총 스테이킹 양 가져오기 (실제로는 스테이킹 어댑터에서 가져와야 함)
 	// 여기서는 간단히 총 투표 수의 3배라고 가정
+	totalVotes := big.NewInt(int64(len(proposal.Votes)))
 	totalStaked := new(big.Int).Mul(totalVotes, big.NewInt(3))
 
-	// 쿼럼 확인
-	if totalStaked.Sign() > 0 {
-		quorumRatio := new(big.Float).Quo(
-			new(big.Float).SetInt(totalVotes),
-			new(big.Float).SetInt(totalStaked),
-		)
-		quorumThreshold := big.NewFloat(a.quorumFloat)
+	// 투표 집계 최적화기 사용
+	result := a.voteTallyOptimizer.TallyVotes(
+		proposal,
+		a.quorumFloat,
+		a.vetoThresholdFloat,
+		a.thresholdFloat,
+		totalStaked,
+	)
 
-		if quorumRatio.Cmp(quorumThreshold) < 0 {
-			a.logger.Info("Proposal rejected due to insufficient quorum", "id", proposal.ID, "quorum", quorumRatio, "threshold", quorumThreshold)
-			return false
-		}
+	if result.Passed {
+		a.logger.Info("Proposal passed", "id", proposal.ID, "yes_votes", result.YesVotes, "total_votes", result.TotalVotes, "tally_time", result.TallyTime)
+	} else {
+		a.logger.Info("Proposal rejected", "id", proposal.ID, "yes_votes", result.YesVotes, "total_votes", result.TotalVotes, "tally_time", result.TallyTime)
 	}
 
-	// 거부권 확인
-	if totalVotes.Sign() > 0 {
-		vetoRatio := new(big.Float).Quo(
-			new(big.Float).SetInt(noWithVetoVotes),
-			new(big.Float).SetInt(totalVotes),
-		)
-		vetoThreshold := big.NewFloat(a.vetoThresholdFloat)
-
-		if vetoRatio.Cmp(vetoThreshold) >= 0 {
-			a.logger.Info("Proposal rejected due to veto", "id", proposal.ID, "veto", vetoRatio, "threshold", vetoThreshold)
-			return false
-		}
-	}
-
-	// 통과 임계값 확인
-	if totalVotes.Sign() > 0 {
-		// 기권표는 총 투표 수에서 제외
-		nonAbstainVotes := new(big.Int).Sub(totalVotes, abstainVotes)
-		if nonAbstainVotes.Sign() > 0 {
-			yesRatio := new(big.Float).Quo(
-				new(big.Float).SetInt(yesVotes),
-				new(big.Float).SetInt(nonAbstainVotes),
-			)
-			threshold := big.NewFloat(a.thresholdFloat)
-
-			if yesRatio.Cmp(threshold) >= 0 {
-				a.logger.Info("Proposal passed", "id", proposal.ID, "yes", yesRatio, "threshold", threshold)
-				return true
-			} else {
-				a.logger.Info("Proposal rejected due to insufficient yes votes", "id", proposal.ID, "yes", yesRatio, "threshold", threshold)
-				return false
-			}
-		}
-	}
-
-	a.logger.Info("Proposal rejected due to no votes", "id", proposal.ID)
-	return false
+	return result.Passed
 }
 
 // executeParameterChangeProposal은 매개변수 변경 제안을 실행합니다.

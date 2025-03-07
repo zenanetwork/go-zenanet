@@ -27,6 +27,8 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/naoina/toml"
+	"github.com/urfave/cli/v2"
 	"github.com/zenanetwork/go-zenanet/accounts"
 	"github.com/zenanetwork/go-zenanet/accounts/external"
 	"github.com/zenanetwork/go-zenanet/accounts/keystore"
@@ -44,8 +46,6 @@ import (
 	"github.com/zenanetwork/go-zenanet/metrics"
 	"github.com/zenanetwork/go-zenanet/node"
 	"github.com/zenanetwork/go-zenanet/rpc"
-	"github.com/naoina/toml"
-	"github.com/urfave/cli/v2"
 )
 
 var (
@@ -104,11 +104,23 @@ type ethstatsConfig struct {
 	URL string `toml:",omitempty"`
 }
 
+type eireneConfig struct {
+	// 블록 생성 관련 설정
+	Period uint64 `toml:",omitempty"` // 블록 간 시간(초)
+	Epoch  uint64 `toml:",omitempty"` // 투표 및 체크포인트를 재설정하는 에포크 길이
+
+	// 슬래싱 관련 설정
+	SlashingThreshold  uint64 `toml:",omitempty"` // 검증자 제거를 고려하는 슬래싱 포인트 임계값
+	SlashingRate       uint64 `toml:",omitempty"` // 슬래싱 시 스테이킹 감소 비율 (1/1000 단위)
+	MissedBlockPenalty uint64 `toml:",omitempty"` // 블록 생성 실패 시 부과되는 슬래싱 포인트
+}
+
 type gzenConfig struct {
 	Eth      ethconfig.Config
 	Node     node.Config
 	Ethstats ethstatsConfig
 	Metrics  metrics.Config
+	Eirene   eireneConfig
 }
 
 func loadConfig(file string, cfg *gzenConfig) error {
@@ -145,6 +157,13 @@ func loadBaseConfig(ctx *cli.Context) gzenConfig {
 		Eth:     ethconfig.Defaults,
 		Node:    defaultNodeConfig(),
 		Metrics: metrics.DefaultConfig,
+		Eirene: eireneConfig{
+			Period:             4,     // 4초마다 블록 생성
+			Epoch:              30000, // 약 33시간마다 에포크 변경
+			SlashingThreshold:  100,   // 검증자 제거를 고려하는 슬래싱 포인트 임계값
+			SlashingRate:       10,    // 슬래싱 시 스테이킹 감소 비율 (1/1000 단위)
+			MissedBlockPenalty: 1,     // 블록 생성 실패 시 부과되는 슬래싱 포인트
+		},
 	}
 
 	// Load config file.

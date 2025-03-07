@@ -81,12 +81,48 @@ type SlashingEvidence struct {
 }
 
 // DoubleSignEvidence는 이중 서명 증거를 나타냅니다.
+// 참고: 이 구조체는 core.DoubleSignEvidence와 호환됩니다.
 type DoubleSignEvidence struct {
 	Height     uint64         // 블록 높이
 	Validator  common.Address // 검증자 주소
 	VoteA      []byte         // 첫 번째 투표
 	VoteB      []byte         // 두 번째 투표
 	Timestamp  time.Time      // 증거가 발생한 시간
+}
+
+// ToCoreEvidence는 이 증거를 core.DoubleSignEvidence로 변환합니다.
+func (e *DoubleSignEvidence) ToCoreEvidence() *core.DoubleSignEvidence {
+	// 두 투표를 하나의 증거 데이터로 결합
+	evidence := append(e.VoteA, e.VoteB...)
+	
+	return &core.DoubleSignEvidence{
+		ValidatorAddress: e.Validator,
+		Height:           e.Height,
+		Time:             uint64(e.Timestamp.Unix()),
+		Timestamp:        e.Timestamp,
+		Evidence:         evidence,
+	}
+}
+
+// FromCoreEvidence는 core.DoubleSignEvidence에서 이 구조체를 생성합니다.
+func DoubleSignEvidenceFromCore(coreEvidence *core.DoubleSignEvidence) *DoubleSignEvidence {
+	// 증거 데이터를 두 부분으로 분리 (실제 구현에서는 더 정교한 방법 필요)
+	evidenceLen := len(coreEvidence.Evidence)
+	var voteA, voteB []byte
+	
+	if evidenceLen > 0 {
+		midPoint := evidenceLen / 2
+		voteA = coreEvidence.Evidence[:midPoint]
+		voteB = coreEvidence.Evidence[midPoint:]
+	}
+	
+	return &DoubleSignEvidence{
+		Height:    coreEvidence.Height,
+		Validator: coreEvidence.ValidatorAddress,
+		VoteA:     voteA,
+		VoteB:     voteB,
+		Timestamp: coreEvidence.Timestamp,
+	}
 }
 
 // DowntimeEvidence는 다운타임 증거를 나타냅니다.
@@ -389,24 +425,34 @@ func (a *SlashingAdapter) ReportDoubleSign(reporter common.Address, evidence Dou
 
 	// 슬래싱 증거 생성
 	slashingEvidence := SlashingEvidence{
-		Type:      SlashingTypeDoubleSign,
+		Type:      "DoubleSign",
 		Validator: evidence.Validator,
 		Height:    evidence.Height,
-		Time:      time.Now(),
+		Time:      evidence.Timestamp,
 		Data:      append(evidence.VoteA, evidence.VoteB...),
 	}
 
-	// 증거 추가
+	// 슬래싱 상태에 증거 추가
 	a.slashingState.addEvidence(slashingEvidence)
 
-	// 데이터베이스에 저장
-	// 실제 구현에서는 a.eirene.GetDB() 형태로 호출
-	// 여기서는 간단히 구현
-	// if err := a.slashingState.store(a.eirene.GetDB()); err != nil {
-	// 	return err
-	// }
+	// 슬래싱 처리
+	a.slashingState.handleDoubleSign(evidence.Validator, evidence.Height, slashingEvidence.Data)
+
+	a.logger.Info("Double sign reported",
+		"validator", evidence.Validator,
+		"height", evidence.Height,
+		"reporter", reporter)
 
 	return nil
+}
+
+// ReportCoreDoubleSign은 core.DoubleSignEvidence를 사용하여 이중 서명을 신고합니다.
+func (a *SlashingAdapter) ReportCoreDoubleSign(reporter common.Address, coreEvidence *core.DoubleSignEvidence) error {
+	// core.DoubleSignEvidence를 staking.DoubleSignEvidence로 변환
+	evidence := DoubleSignEvidenceFromCore(coreEvidence)
+	
+	// 기존 함수 호출
+	return a.ReportDoubleSign(reporter, *evidence)
 }
 
 // UnjailValidator는 감금된 검증자를 해제합니다.

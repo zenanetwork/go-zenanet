@@ -324,11 +324,17 @@ type SlashingEvidence struct {
 type DoubleSignEvidence struct {
 	ValidatorAddress common.Address // 검증자 주소
 	Height           uint64         // 블록 높이
+	BlockHash        common.Hash    // 블록 해시
 	Time             uint64         // 시간
+	Timestamp        time.Time      // 타임스탬프
 	Header1          []byte         // 첫 번째 헤더
 	Header2          []byte         // 두 번째 헤더
 	Signature1       []byte         // 첫 번째 서명
 	Signature2       []byte         // 두 번째 서명
+	VoteA            []byte         // 첫 번째 투표
+	VoteB            []byte         // 두 번째 투표
+	Evidence         []byte         // 증거 데이터
+	ReporterAddr     common.Address // 신고자 주소
 }
 
 // 보상 관련 타입

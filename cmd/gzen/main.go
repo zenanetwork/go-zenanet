@@ -156,6 +156,40 @@ var (
 		utils.BeaconCheckpointFlag,
 	}, utils.NetworkFlags, utils.DatabaseFlags)
 
+	// Eirene 관련 플래그
+	eireneFlags = []cli.Flag{
+		&cli.UintFlag{
+			Name:     "eirene.period",
+			Usage:    "블록 생성 주기(초)",
+			Value:    4,
+			Category: flags.EthCategory,
+		},
+		&cli.UintFlag{
+			Name:     "eirene.epoch",
+			Usage:    "에포크 길이(블록 수)",
+			Value:    30000,
+			Category: flags.EthCategory,
+		},
+		&cli.UintFlag{
+			Name:     "eirene.slashing-threshold",
+			Usage:    "슬래싱 임계값",
+			Value:    100,
+			Category: flags.EthCategory,
+		},
+		&cli.UintFlag{
+			Name:     "eirene.slashing-rate",
+			Usage:    "슬래싱 비율(1/1000)",
+			Value:    10,
+			Category: flags.EthCategory,
+		},
+		&cli.UintFlag{
+			Name:     "eirene.missed-block-penalty",
+			Usage:    "블록 생성 실패 시 페널티",
+			Value:    1,
+			Category: flags.EthCategory,
+		},
+	}
+
 	rpcFlags = []cli.Flag{
 		utils.HTTPEnabledFlag,
 		utils.HTTPListenAddrFlag,
@@ -206,6 +240,49 @@ var (
 	}
 )
 
+// Eirene 관련 명령어
+var eireneCommand = &cli.Command{
+	Name:      "eirene",
+	Usage:     "Eirene 합의 알고리즘 관련 명령어",
+	ArgsUsage: "",
+	Category:  "EIRENE COMMANDS",
+	Description: `
+Eirene 합의 알고리즘을 사용하는 Zenanet 블록체인을 관리하기 위한 명령어입니다.
+`,
+	Subcommands: []*cli.Command{
+		{
+			Name:      "mainnet",
+			Usage:     "Eirene 메인넷 실행",
+			ArgsUsage: "",
+			Action:    runEireneMainnet,
+			Flags:     slices.Concat(nodeFlags, rpcFlags, eireneFlags),
+			Description: `
+Eirene 합의 알고리즘을 사용하는 Zenanet 메인넷을 실행합니다.
+`,
+		},
+		{
+			Name:      "testnet",
+			Usage:     "Eirene 테스트넷 실행",
+			ArgsUsage: "",
+			Action:    runEireneTestnet,
+			Flags:     slices.Concat(nodeFlags, rpcFlags, eireneFlags),
+			Description: `
+Eirene 합의 알고리즘을 사용하는 Zenanet 테스트넷을 실행합니다.
+`,
+		},
+		{
+			Name:      "local",
+			Usage:     "Eirene 로컬 테스트넷 실행",
+			ArgsUsage: "",
+			Action:    runEireneLocalTestnet,
+			Flags:     slices.Concat(nodeFlags, rpcFlags, eireneFlags),
+			Description: `
+Eirene 합의 알고리즘을 사용하는 로컬 테스트넷을 실행합니다.
+`,
+		},
+	},
+}
+
 var app = flags.NewApp("the go-zenanet command line interface")
 
 func init() {
@@ -243,6 +320,8 @@ func init() {
 		snapshotCommand,
 		// See verkle.go
 		verkleCommand,
+		// Eirene 명령어 추가
+		eireneCommand,
 	}
 	if logTestCommand != nil {
 		app.Commands = append(app.Commands, logTestCommand)
@@ -417,4 +496,144 @@ func startNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 			}
 		}()
 	}
+}
+
+// runEireneMainnet은 Eirene 메인넷을 실행합니다.
+func runEireneMainnet(ctx *cli.Context) error {
+	// 기본 설정 로드
+	cfg := loadBaseConfig(ctx)
+
+	// Eirene 메인넷 설정 적용
+	cfg.Node.P2P.DiscoveryV5 = true
+	cfg.Node.P2P.BootstrapNodes = nil // 실제 메인넷 부트스트랩 노드로 업데이트 필요
+	cfg.Node.P2P.StaticNodes = nil    // 실제 메인넷 스태틱 노드로 업데이트 필요
+	cfg.Node.HTTPModules = append(cfg.Node.HTTPModules, "eirene")
+	cfg.Node.WSModules = append(cfg.Node.WSModules, "eirene")
+
+	// Eirene 설정 적용
+	if ctx.IsSet("eirene.period") {
+		cfg.Eirene.Period = ctx.Uint64("eirene.period")
+	}
+	if ctx.IsSet("eirene.epoch") {
+		cfg.Eirene.Epoch = ctx.Uint64("eirene.epoch")
+	}
+	if ctx.IsSet("eirene.slashing-threshold") {
+		cfg.Eirene.SlashingThreshold = ctx.Uint64("eirene.slashing-threshold")
+	}
+	if ctx.IsSet("eirene.slashing-rate") {
+		cfg.Eirene.SlashingRate = ctx.Uint64("eirene.slashing-rate")
+	}
+	if ctx.IsSet("eirene.missed-block-penalty") {
+		cfg.Eirene.MissedBlockPenalty = ctx.Uint64("eirene.missed-block-penalty")
+	}
+
+	// 노드 생성
+	stack, err := node.New(&cfg.Node)
+	if err != nil {
+		utils.Fatalf("Failed to create the protocol stack: %v", err)
+	}
+
+	// Eirene 합의 엔진 등록
+	utils.RegisterEireneService(stack, &cfg.Eth, &cfg.Eirene, true)
+
+	// 노드 시작
+	startNode(ctx, stack, false)
+	stack.Wait()
+	return nil
+}
+
+// runEireneTestnet은 Eirene 테스트넷을 실행합니다.
+func runEireneTestnet(ctx *cli.Context) error {
+	// 기본 설정 로드
+	cfg := loadBaseConfig(ctx)
+
+	// Eirene 테스트넷 설정 적용
+	cfg.Node.P2P.DiscoveryV5 = true
+	cfg.Node.P2P.BootstrapNodes = nil // 실제 테스트넷 부트스트랩 노드로 업데이트 필요
+	cfg.Node.P2P.StaticNodes = nil    // 실제 테스트넷 스태틱 노드로 업데이트 필요
+	cfg.Node.HTTPModules = append(cfg.Node.HTTPModules, "eirene")
+	cfg.Node.WSModules = append(cfg.Node.WSModules, "eirene")
+
+	// 테스트넷 설정
+	cfg.Eirene.Period = 6      // 테스트넷은 6초마다 블록 생성
+	cfg.Eirene.Epoch = 10000   // 약 16시간마다 에포크 변경
+
+	// Eirene 설정 적용
+	if ctx.IsSet("eirene.period") {
+		cfg.Eirene.Period = ctx.Uint64("eirene.period")
+	}
+	if ctx.IsSet("eirene.epoch") {
+		cfg.Eirene.Epoch = ctx.Uint64("eirene.epoch")
+	}
+	if ctx.IsSet("eirene.slashing-threshold") {
+		cfg.Eirene.SlashingThreshold = ctx.Uint64("eirene.slashing-threshold")
+	}
+	if ctx.IsSet("eirene.slashing-rate") {
+		cfg.Eirene.SlashingRate = ctx.Uint64("eirene.slashing-rate")
+	}
+	if ctx.IsSet("eirene.missed-block-penalty") {
+		cfg.Eirene.MissedBlockPenalty = ctx.Uint64("eirene.missed-block-penalty")
+	}
+
+	// 노드 생성
+	stack, err := node.New(&cfg.Node)
+	if err != nil {
+		utils.Fatalf("Failed to create the protocol stack: %v", err)
+	}
+
+	// Eirene 합의 엔진 등록
+	utils.RegisterEireneService(stack, &cfg.Eth, &cfg.Eirene, false)
+
+	// 노드 시작
+	startNode(ctx, stack, false)
+	stack.Wait()
+	return nil
+}
+
+// runEireneLocalTestnet은 Eirene 로컬 테스트넷을 실행합니다.
+func runEireneLocalTestnet(ctx *cli.Context) error {
+	// 기본 설정 로드
+	cfg := loadBaseConfig(ctx)
+
+	// 로컬 테스트넷 설정 적용
+	cfg.Node.P2P.NoDiscovery = true
+	cfg.Node.P2P.BootstrapNodes = nil
+	cfg.Node.P2P.StaticNodes = nil
+	cfg.Node.HTTPModules = append(cfg.Node.HTTPModules, "eirene")
+	cfg.Node.WSModules = append(cfg.Node.WSModules, "eirene")
+
+	// 로컬 테스트넷 설정
+	cfg.Eirene.Period = 2      // 로컬 테스트넷은 2초마다 블록 생성
+	cfg.Eirene.Epoch = 1000    // 약 33분마다 에포크 변경
+
+	// Eirene 설정 적용
+	if ctx.IsSet("eirene.period") {
+		cfg.Eirene.Period = ctx.Uint64("eirene.period")
+	}
+	if ctx.IsSet("eirene.epoch") {
+		cfg.Eirene.Epoch = ctx.Uint64("eirene.epoch")
+	}
+	if ctx.IsSet("eirene.slashing-threshold") {
+		cfg.Eirene.SlashingThreshold = ctx.Uint64("eirene.slashing-threshold")
+	}
+	if ctx.IsSet("eirene.slashing-rate") {
+		cfg.Eirene.SlashingRate = ctx.Uint64("eirene.slashing-rate")
+	}
+	if ctx.IsSet("eirene.missed-block-penalty") {
+		cfg.Eirene.MissedBlockPenalty = ctx.Uint64("eirene.missed-block-penalty")
+	}
+
+	// 노드 생성
+	stack, err := node.New(&cfg.Node)
+	if err != nil {
+		utils.Fatalf("Failed to create the protocol stack: %v", err)
+	}
+
+	// Eirene 합의 엔진 등록
+	utils.RegisterEireneService(stack, &cfg.Eth, &cfg.Eirene, false)
+
+	// 노드 시작
+	startNode(ctx, stack, false)
+	stack.Wait()
+	return nil
 }
