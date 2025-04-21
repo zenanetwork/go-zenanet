@@ -29,6 +29,7 @@ import (
 	"github.com/zenanetwork/go-zenanet/consensus/ethash"
 	"github.com/zenanetwork/go-zenanet/consensus/zena"
 	"github.com/zenanetwork/go-zenanet/consensus/zena/contract" //nolint:typecheck
+	"github.com/zenanetwork/go-zenanet/consensus/zena/iris"
 	"github.com/zenanetwork/go-zenanet/consensus/zena/iris/span"
 	"github.com/zenanetwork/go-zenanet/consensus/zena/irisapp"
 	"github.com/zenanetwork/go-zenanet/consensus/zena/irisgrpc"
@@ -241,7 +242,7 @@ func CreateConsensusEngine(chainConfig *params.ChainConfig, ethConfig *Config, d
 			} else if ethConfig.IrisgRPCAddress != "" {
 				irisClient = irisgrpc.NewIrisGRPCClient(ethConfig.IrisgRPCAddress)
 			} else {
-				irisClient = zena.NewIrisClient(ethConfig.IrisURL)
+				irisClient = iris.NewIrisClient(ethConfig.IrisURL)
 			}
 
 			return zena.New(chainConfig, db, blockchainAPI, spanner, irisClient, genesisContractsClient, false), nil

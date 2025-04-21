@@ -84,8 +84,8 @@ require (
 	github.com/tyler-smith/go-bip39 v1.1.0
 	github.com/urfave/cli/v2 v2.27.5
 	github.com/xsleonard/go-merkle v1.1.0
-	github.com/zenanetwork/iris v0.1.2
-	github.com/zenanetwork/zenaproto v0.1.1
+	github.com/zenanetwork/iris v0.1.8
+	github.com/zenanetwork/zenaproto v0.1.3
 	go.opentelemetry.io/otel v1.27.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.27.0
 	go.opentelemetry.io/otel/sdk v1.27.0
@@ -105,6 +105,7 @@ require (
 
 require (
 	cloud.google.com/go/iam v1.1.6 // indirect
+	github.com/ethereum/go-ethereum v1.15.8 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.2 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
@@ -202,7 +203,6 @@ require (
 	github.com/cosmos/ledger-cosmos-go v0.13.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/etcd-io/bbolt v1.3.3 // indirect
-	github.com/ethereum/go-ethereum v1.15.8 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/gammazero/deque v0.2.1 // indirect
 	github.com/go-kit/kit v0.12.0 // indirect
@@ -289,11 +289,13 @@ require (
 	google.golang.org/genproto v0.0.0-20240227224415-6ceb2ff114de // indirect
 )
 
-replace github.com/cosmos/cosmos-sdk => github.com/maticnetwork/cosmos-sdk v0.38.4
+replace github.com/cosmos/cosmos-sdk => github.com/maticnetwork/cosmos-sdk v0.38.5-polygon
 
-replace github.com/tendermint/tendermint => github.com/maticnetwork/tendermint v0.33.0
+replace github.com/tendermint/tendermint => github.com/maticnetwork/tendermint v0.33.5
 
 replace github.com/tendermint/tm-db => github.com/tendermint/tm-db v0.2.0
+
+replace github.com/ethereum/go-ethereum => github.com/zenanetwork/go-zenanet v0.1.0
 
 replace github.com/Masterminds/goutils => github.com/Masterminds/goutils v1.1.1
 

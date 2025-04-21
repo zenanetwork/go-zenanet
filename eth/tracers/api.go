@@ -306,7 +306,7 @@ func (api *API) traceChain(start, end *types.Block, config *TraceConfig, closed 
 		}
 	}
 
-	if config.ZenaTxTraceEnabled == nil {
+	if config.ZenaTraceEnabled == nil {
 		config.ZenaTraceEnabled = defaultZenaTraceEnabled
 	}
 

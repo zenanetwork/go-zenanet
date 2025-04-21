@@ -21,7 +21,7 @@ func (h *IrisGRPCClient) StateSyncEvents(ctx context.Context, fromID uint64, to 
 	}
 
 	var (
-		res    proto.Heimdall_StateSyncEventsClient
+		res    proto.Iris_StateSyncEventsClient
 		events *proto.StateSyncEventsResponse
 		err    error
 	)

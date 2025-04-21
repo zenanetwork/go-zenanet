@@ -311,7 +311,7 @@ func prepare(ctx *cli.Context) {
 	case ctx.IsSet(utils.AmoyFlag.Name):
 		log.Info("Starting Zena on Amoy testnet...")
 
-	case ctx.IsSet(utils.BorMainnetFlag.Name):
+	case ctx.IsSet(utils.ZenaMainnetFlag.Name):
 		log.Info("Starting Zena on Zena mainnet...")
 
 	case ctx.IsSet(utils.DeveloperFlag.Name):
