@@ -1,0 +1,9 @@
+#!/bin/bash
+#
+#
+##############
+# Stop zena before removal
+##############
+#sudo systemctl stop zena.service
+#############
+

@@ -1,0 +1,6 @@
+#!/bin/bash
+#
+###############
+# Remove zena installs
+##############
+sudo systemctl daemon-reload

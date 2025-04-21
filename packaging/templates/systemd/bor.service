@@ -1,0 +1,16 @@
+[Unit]
+  Description=zena
+  StartLimitIntervalSec=500
+  StartLimitBurst=5
+
+[Service]
+  Restart=on-failure
+  RestartSec=5s
+  ExecStart=/usr/bin/zena server -config "/var/lib/zena/config.toml"
+  Type=simple
+  KillSignal=SIGINT
+  User=zena
+  TimeoutStopSec=120
+
+[Install]
+  WantedBy=multi-user.target

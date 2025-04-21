@@ -1,0 +1,6 @@
+#!/bin/bash
+#
+###############
+# Remove zena installs
+##############
+sudo rm -rf /usr/bin/zena

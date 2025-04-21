@@ -1,0 +1,16 @@
+FROM alpine:3.14
+
+ARG ZENA_DIR=/var/lib/zena
+ENV ZENA_DIR=$ZENA_DIR
+
+RUN apk add --no-cache ca-certificates && \
+    mkdir -p ${ZENA_DIR}
+
+WORKDIR ${ZENA_DIR}
+COPY zena /usr/bin/
+COPY builder/files/genesis-mainnet-v1.json ${ZENA_DIR}
+COPY builder/files/genesis-testnet-v4.json ${ZENA_DIR}
+COPY builder/files/genesis-amoy.json ${ZENA_DIR}
+
+EXPOSE 8545 8546 8547 30303 30303/udp
+ENTRYPOINT ["zena"]

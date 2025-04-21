@@ -1,0 +1,16 @@
+[Unit]
+  Description=zena
+  StartLimitIntervalSec=500
+  StartLimitBurst=5
+
+[Service]
+  Restart=on-failure
+  RestartSec=5s
+  ExecStart=/usr/bin/zena bootnode -node-key /var/lib/zena/data/zena/nodekey -listen-addr "0.0.0.0:30303" -verbosity 3
+  Type=simple
+  KillSignal=SIGINT
+  User=zena
+  TimeoutStopSec=120
+
+[Install]
+  WantedBy=multi-user.target
