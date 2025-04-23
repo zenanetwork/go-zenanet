@@ -748,7 +748,7 @@ func DefaultConfig() *Config {
 			},
 		},
 		Cache: &CacheConfig{
-			Cache:              1024, // gzen's default (suitable for mumbai)
+			Cache:              1024, // gzen's default (suitable for eirene)
 			PercDatabase:       50,
 			PercTrie:           15,
 			PercGc:             25,

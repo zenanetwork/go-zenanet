@@ -139,8 +139,8 @@ var (
 		utils.DNSDiscoveryFlag,
 		utils.DeveloperFlag,
 		utils.DeveloperGasLimitFlag,
-		utils.MumbaiFlag,
-		utils.AmoyFlag,
+		utils.EireneFlag,
+		utils.PaxFlag,
 		utils.ZenaMainnetFlag,
 		utils.DeveloperPeriodFlag,
 		utils.VMEnableDebugFlag,
@@ -305,11 +305,11 @@ func prepare(ctx *cli.Context) {
 	case ctx.IsSet(utils.SepoliaFlag.Name):
 		log.Info("Starting Gzen on Sepolia testnet...")
 
-	case ctx.IsSet(utils.MumbaiFlag.Name):
-		log.Info("Starting Zena on Mumbai testnet...")
+	case ctx.IsSet(utils.EireneFlag.Name):
+		log.Info("Starting Zena on Eirene testnet...")
 
-	case ctx.IsSet(utils.AmoyFlag.Name):
-		log.Info("Starting Zena on Amoy testnet...")
+	case ctx.IsSet(utils.PaxFlag.Name):
+		log.Info("Starting Zena on Pax testnet...")
 
 	case ctx.IsSet(utils.ZenaMainnetFlag.Name):
 		log.Info("Starting Zena on Zena mainnet...")
@@ -340,8 +340,8 @@ func prepare(ctx *cli.Context) {
 		// Make sure we're not on any supported preconfigured testnet either
 		if !ctx.IsSet(utils.SepoliaFlag.Name) &&
 			!ctx.IsSet(utils.GoerliFlag.Name) &&
-			!ctx.IsSet(utils.MumbaiFlag.Name) &&
-			!ctx.IsSet(utils.AmoyFlag.Name) &&
+			!ctx.IsSet(utils.EireneFlag.Name) &&
+			!ctx.IsSet(utils.PaxFlag.Name) &&
 			!ctx.IsSet(utils.DeveloperFlag.Name) {
 			// Nope, we're really on mainnet. Bump that cache up!
 			log.Info("Bumping default cache on mainnet", "provided", ctx.Int(utils.CacheFlag.Name), "updated", 4096)

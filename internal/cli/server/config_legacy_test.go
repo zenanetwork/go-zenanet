@@ -50,7 +50,7 @@ func TestDefaultConfigLegacy(t *testing.T) {
 
 		testConfig := DefaultConfig()
 
-		testConfig.Identity = "Polygon-Devs"
+		testConfig.Identity = "Zenanet-Devs"
 		testConfig.DataDir = "/var/lib/zena"
 
 		assert.Equal(t, expectedConfig, testConfig)

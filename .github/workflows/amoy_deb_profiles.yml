@@ -1,4 +1,4 @@
-name: amoy_deb_profiles
+name: pax_deb_profiles
 
 on:
   push:
@@ -45,7 +45,7 @@ jobs:
           echo "Section: base" >> packaging/deb/zena/DEBIAN/control
           echo "Priority: optional" >> packaging/deb/zena/DEBIAN/control
           echo "Architecture: all" >> packaging/deb/zena/DEBIAN/control
-          echo "Maintainer: devops@polygon.technology" >> packaging/deb/zena/DEBIAN/control
+          echo "Maintainer: devops@zenanet.technology" >> packaging/deb/zena/DEBIAN/control
           echo "Description: zena profile package" >> packaging/deb/zena/DEBIAN/control
 
       # Bootnode Profile
@@ -54,50 +54,50 @@ jobs:
         env:
           ARCH: all
           NODE: bootnode
-          NETWORK: amoy
+          NETWORK: pax
       - name: Putting toml for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
-        run: cp -rp packaging/templates/testnet-amoy/sentry/sentry/zena/config.toml packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/var/lib/zena/
+        run: cp -rp packaging/templates/testnet-pax/sentry/sentry/zena/config.toml packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/var/lib/zena/
         env:
           ARCH: all
           NODE: bootnode
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying the preinst for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/preinst packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/preinst
         env:
           ARCH: all
           NODE: bootnode
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying the postinst for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/postinst.profile packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/postinst
         env:
           ARCH: all
           NODE: bootnode
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying the prerm for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/prerm packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/prerm
         env:
           ARCH: all
           NODE: bootnode
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying the postrm for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/postrm packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/postrm
         env:
           ARCH: all
           NODE: bootnode
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying systemd file for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/systemd/zena_bootnode.service packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/lib/systemd/system/zena.service
         env:
           ARCH: all
           NODE: bootnode
-          NETWORK: amoy
+          NETWORK: pax
 
       - name: Running package build for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: dpkg-deb --build --root-owner-group packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}
         env:
           ARCH: all
           NODE: bootnode
-          NETWORK: amoy
+          NETWORK: pax
 
       # Sentry Profile
       - name: Prepping ${{ env.NETWORK }} ${{ env.NODE }} node for ${{ env.ARCH }}
@@ -105,50 +105,50 @@ jobs:
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
       - name: Putting toml for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
-        run: cp -rp packaging/templates/testnet-amoy/sentry/sentry/zena/config.toml packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/var/lib/zena/
+        run: cp -rp packaging/templates/testnet-pax/sentry/sentry/zena/config.toml packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/var/lib/zena/
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying the preinst for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/preinst packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/preinst
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying the postinst for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/postinst.profile packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/postinst
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying the prerm for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/prerm packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/prerm
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying the postrm for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/postrm packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/postrm
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying systemd file for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/systemd/zena.service packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/lib/systemd/system/
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
 
       - name: Running package build for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: dpkg-deb --build --root-owner-group packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
 
       # PBSS Sentry
       - name: Prepping ${{ env.NETWORK }} ${{ env.NODE }} node for ${{ env.ARCH }}
@@ -156,49 +156,49 @@ jobs:
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
       - name: Putting toml for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
-        run: cp -rp packaging/templates/testnet-amoy/sentry/sentry/zena/pbss_config.toml packaging/deb/zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/var/lib/zena/config.toml
+        run: cp -rp packaging/templates/testnet-pax/sentry/sentry/zena/pbss_config.toml packaging/deb/zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/var/lib/zena/config.toml
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying the preinst for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/preinst packaging/deb/zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/preinst
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying the postinst for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/postinst.profile packaging/deb/zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/postinst
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying the prerm for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/prerm packaging/deb/zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/prerm
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying the postrm for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/postrm packaging/deb/zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/postrm
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying systemd file for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/systemd/zena.service packaging/deb/zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/lib/systemd/system/
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
       - name: Running package build for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: dpkg-deb --build --root-owner-group packaging/deb/zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
 
       # Validator Profile
       - name: Prepping Zena ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
@@ -206,43 +206,43 @@ jobs:
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying Postinstall script for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/postinst.profile packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/postinst
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying Prerm script for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/prerm packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/prerm
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying Postrm script for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/postrm packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/postrm
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying config.toml for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
-        run: cp -rp packaging/templates/testnet-amoy/sentry/validator/zena/config.toml packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/var/lib/zena/
+        run: cp -rp packaging/templates/testnet-pax/sentry/validator/zena/config.toml packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/var/lib/zena/
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying systemd file for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/systemd/zena.service packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/lib/systemd/system/
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
       - name: Building zena ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }} profile
         run: dpkg-deb --build --root-owner-group packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
 
       # PBSS Validator
       - name: Prepping Zena ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
@@ -250,43 +250,43 @@ jobs:
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying Postinstall script for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/postinst.profile packaging/deb/zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/postinst
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying Prerm script for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/prerm packaging/deb/zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/prerm
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying Postrm script for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/postrm packaging/deb/zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/postrm
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying config.toml for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
-        run: cp -rp packaging/templates/testnet-amoy/sentry/validator/zena/pbss_config.toml packaging/deb/zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/var/lib/zena/config.toml
+        run: cp -rp packaging/templates/testnet-pax/sentry/validator/zena/pbss_config.toml packaging/deb/zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/var/lib/zena/config.toml
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying systemd file for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/systemd/zena.service packaging/deb/zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/lib/systemd/system/
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
       - name: Building zena ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }} profile
         run: dpkg-deb --build --root-owner-group packaging/deb/zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
 
       # Archive Profile
       - name: Creating zena ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
@@ -294,49 +294,49 @@ jobs:
         env:
           ARCH: all
           NODE: archive
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying profile preinst file for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/preinst packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/preinst
         env:
           ARCH: all
           NODE: archive
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying the profile postinst for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/postinst.profile packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/postinst
         env:
           ARCH: all
           NODE: archive
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying profile prerm file for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/prerm packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/prerm
         env:
           ARCH: all
           NODE: archive
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying profile postrm file for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/package_scripts/postrm packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/DEBIAN/postrm
         env:
           ARCH: all
           NODE: archive
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying the toml for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
-        run: cp -rp packaging/templates/testnet-amoy/archive/config.toml packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/var/lib/zena/
+        run: cp -rp packaging/templates/testnet-pax/archive/config.toml packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/var/lib/zena/
         env:
           ARCH: all
           NODE: archive
-          NETWORK: amoy
+          NETWORK: pax
       - name: Copying systemd file for ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }}
         run: cp -rp packaging/templates/systemd/zena.service packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}/lib/systemd/system/
         env:
           ARCH: all
           NODE: archive
-          NETWORK: amoy
+          NETWORK: pax
       - name: Building zena ${{ env.NODE }} on ${{ env.NETWORK }} on ${{ env.ARCH }} profile
         run: dpkg-deb --build --root-owner-group packaging/deb/zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}
         env:
           ARCH: all
           NODE: archive
-          NETWORK: amoy
+          NETWORK: pax
 
       # Shasum
       - name: shasum the zena debian package
@@ -344,37 +344,37 @@ jobs:
         env:
           ARCH: all
           NODE: bootnode
-          NETWORK: amoy
+          NETWORK: pax
       - name: shasum the zena debian package
         run: cd packaging/deb/ && sha256sum zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}.deb > zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}.deb.checksum
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
       - name: shasum the zena pbss debian package
         run: cd packaging/deb/ && sha256sum zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}.deb > zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}.deb.checksum
         env:
           ARCH: all
           NODE: sentry
-          NETWORK: amoy
+          NETWORK: pax
       - name: shasum the zena-${{ env.ARCH }} debian package
         run: cd packaging/deb/ && sha256sum zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}.deb > zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}.deb.checksum
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
       - name: shasum the zena pbss debian package
         run: cd packaging/deb/ && sha256sum zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}.deb > zena-pbss-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}.deb.checksum
         env:
           ARCH: all
           NODE: validator
-          NETWORK: amoy
+          NETWORK: pax
       - name: shasum the zena debian package
         run: cd packaging/deb/ && sha256sum zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}.deb > zena-${{ env.NETWORK }}-${{ env.NODE }}-config_${{ env.GIT_TAG }}-${{ env.ARCH }}.deb.checksum
         env:
           ARCH: all
           NODE: archive
-          NETWORK: amoy
+          NETWORK: pax
 
       ############ Check and Upload ##########################
       - name: Confirming package built
@@ -386,7 +386,7 @@ jobs:
           tag_name: ${{ env.GIT_TAG }}
           prerelease: true
           files: |
-            packaging/deb/zena-amoy-**.deb
-            packaging/deb/zena-pbss-amoy-**.deb 
-            packaging/deb/zena-amoy-**.deb.checksum
-            packaging/deb/zena-pbss-amoy-**.deb.checksum
+            packaging/deb/zena-pax-**.deb
+            packaging/deb/zena-pbss-pax-**.deb 
+            packaging/deb/zena-pax-**.deb.checksum
+            packaging/deb/zena-pbss-pax-**.deb.checksum

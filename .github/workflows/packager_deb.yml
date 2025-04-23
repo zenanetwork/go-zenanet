@@ -54,7 +54,7 @@ jobs:
           echo "Section: base" >> packaging/deb/zena/DEBIAN/control
           echo "Priority: optional" >> packaging/deb/zena/DEBIAN/control
           echo "Architecture: amd64" >> packaging/deb/zena/DEBIAN/control
-          echo "Maintainer: devops@polygon.technology" >> packaging/deb/zena/DEBIAN/control
+          echo "Maintainer: devops@zenanet.technology" >> packaging/deb/zena/DEBIAN/control
           echo "Description: zena binary package" >> packaging/deb/bzenaozenar/DEBIAN/control
 
       - name: Creating package for binary for zena ${{ env.ARCH }}
@@ -94,7 +94,7 @@ jobs:
           echo "Section: base" >> packaging/deb/zena/DEBIAN/control
           echo "Priority: optional" >> packaging/deb/zena/DEBIAN/control
           echo "Architecture: arm64" >> packaging/deb/zena/DEBIAN/control
-          echo "Maintainer: devops@polygon.technology" >> packaging/deb/zena/DEBIAN/control
+          echo "Maintainer: devops@zenanet.technology" >> packaging/deb/zena/DEBIAN/control
           echo "Description: zena binary package" >> packaging/deb/zena/DEBIAN/control
 
       - name: Creating package for binary for zena ${{ env.ARCH }}

@@ -1,5 +1,5 @@
 chain = "mainnet"
-identity = "Polygon-Devs"
+identity = "Zenanet-Devs"
 verbosity = 3
 log-level = ""
 vmdebug = false

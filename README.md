@@ -19,7 +19,7 @@ The network accepts `mainnet`,`pax` or `eirene` and the node type accepts `valid
 - Dump the suitable config file (based on the network and node type provided) at `/var/lib/zena` and use it as the home dir.
 - Create a systemd service named `zena` at `/lib/systemd/system/zena.service` which starts zena using the config file as `zena` user.
 
-The releases supports both the networks i.e. Zena Mainnet, Pax and Eirene (Testnet) unless explicitly specified. Before the stable release for mainnet, pre-releases will be available marked with `beta` tag for deploying on Mumbai/Amoy (testnet). On sufficient testing, stable release for mainnet will be announced with a forum post.
+The releases supports both the networks i.e. Zena Mainnet, Pax and Eirene (Testnet) unless explicitly specified. Before the stable release for mainnet, pre-releases will be available marked with `beta` tag for deploying on Eirene/Pax (testnet). On sufficient testing, stable release for mainnet will be announced with a forum post.
 
 ### Building from source
 

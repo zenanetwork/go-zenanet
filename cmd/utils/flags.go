@@ -159,13 +159,13 @@ var (
 		Usage:    "Holesky network: pre-configured proof-of-stake test network",
 		Category: flags.EthCategory,
 	}
-	MumbaiFlag = &cli.BoolFlag{
-		Name:  "zena-mumbai",
-		Usage: "Mumbai network: pre-configured proof-of-stake test network",
+	EireneFlag = &cli.BoolFlag{
+		Name:  "zena-eirene",
+		Usage: "Eirene network: pre-configured proof-of-stake test network",
 	}
-	AmoyFlag = &cli.BoolFlag{
-		Name:  "zena-amoy",
-		Usage: "Amoy network: pre-configured proof-of-stake test network",
+	PaxFlag = &cli.BoolFlag{
+		Name:  "zena-pax",
+		Usage: "Pax network: pre-configured proof-of-stake test network",
 	}
 	ZenaMainnetFlag = &cli.BoolFlag{
 		Name:  "zena-mainnet",

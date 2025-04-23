@@ -590,7 +590,7 @@ func (w *worker) mainLoop() {
 	for {
 		select {
 		case req := <-w.newWorkCh:
-			if w.chainConfig.ChainID.Cmp(params.ZenaMainnetChainConfig.ChainID) == 0 || w.chainConfig.ChainID.Cmp(params.MumbaiChainConfig.ChainID) == 0 || w.chainConfig.ChainID.Cmp(params.AmoyChainConfig.ChainID) == 0 {
+			if w.chainConfig.ChainID.Cmp(params.MainnetChainConfig.ChainID) == 0 || w.chainConfig.ChainID.Cmp(params.EireneChainConfig.ChainID) == 0 || w.chainConfig.ChainID.Cmp(params.PaxChainConfig.ChainID) == 0 {
 				if w.eth.PeerCount() > 0 {
 					//nolint:contextcheck
 					w.commitWork(req.interrupt, req.noempty, req.timestamp)
@@ -1134,9 +1134,9 @@ mainloop:
 				reads := env.mvReadMapList[i-1]
 
 				_, ok1 := reads[blockstm.NewSubpathKey(env.coinbase, state.BalancePath)]
-				_, ok2 := reads[blockstm.NewSubpathKey(common.HexToAddress(w.chainConfig.Zena.CalculateBurntContract(env.header.Number.Uint64())), state.BalancePath)]
+				// _, ok2 := reads[blockstm.NewSubpathKey(common.HexToAddress(w.chainConfig.Zena.CalculateBurntContract(env.header.Number.Uint64())), state.BalancePath)]
 
-				if ok1 || ok2 {
+				if ok1 {
 					delayFlag = false
 					break
 				}

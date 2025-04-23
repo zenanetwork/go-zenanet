@@ -68,25 +68,18 @@ var GoerliBootnodes = []string{
 	"enode://d2b720352e8216c9efc470091aa91ddafc53e222b32780f505c817ceef69e01d5b0b0797b69db254c586f493872352f5a022b4d8479a00fc92ec55f9ad46a27e@88.99.70.182:30303",
 }
 
-// MumbaiBootnodes are the enode URLs of the P2P bootstrap nodes running on the
-// Mumbai test network.
-var MumbaiBootnodes = []string{
+// EireneBootnodes are the enode URLs of the P2P bootstrap nodes running on the
+// Eirene test network.
+var EireneBootnodes = []string{
 	"enode://bdcd4786a616a853b8a041f53496d853c68d99d54ff305615cd91c03cd56895e0a7f6e9f35dbf89131044e2114a9a782b792b5661e3aff07faf125a98606a071@43.200.206.40:30303",
 	"enode://209aaf7ed549cf4a5700fd833da25413f80a1248bd3aa7fe2a87203e3f7b236dd729579e5c8df61c97bf508281bae4969d6de76a7393bcbd04a0af70270333b3@54.216.248.9:30303",
 }
 
-// AmoyBootnodes are the enode URLs of the P2P bootstrap nodes running on the
-// Amoy test network.
-var AmoyBootnodes = []string{
+// PaxBootnodes are the enode URLs of the P2P bootstrap nodes running on the
+// Pax test network.
+var PaxBootnodes = []string{
 	"enode://c9c8c18cde48b41d46ced0c564496aef721a9b58f8724025a0b1f3f26f1b826f31786f890f8f8781e18b16dbb3c7bff805c7304d1273ac11630ed25a3f0dc41c@34.89.39.114:30303",
 	"enode://0ef8758cafc0063405f3f31fe22f2a3b566aa871bd7cd405e35954ec8aa7237c21e1ccc1f65f1b6099ab36db029362bc2fecf001a771b3d9803bbf1968508cef@35.197.249.21:30303",
-}
-
-// ZenaMainnetBootnodes are the enode URLs of the P2P bootstrap nodes running on the
-// main Zena network.
-var ZenaMainnetBootnodes = []string{
-	"enode://e4fb013061eba9a2c6fb0a41bbd4149f4808f0fb7e88ec55d7163f19a6f02d64d0ce5ecc81528b769ba552a7068057432d44ab5e9e42842aff5b4709aa2c3f3b@34.89.75.187:30303",
-	"enode://a49da6300403cf9b31e30502eb22c142ba4f77c9dda44990bccce9f2121c3152487ee95ee55c6b92d4cdce77845e40f59fd927da70ea91cf935b23e262236d75@34.142.43.249:30303",
 }
 
 var KilnBootnodes = []string{
@@ -132,12 +125,10 @@ func KnownDNSNetwork(genesis common.Hash, protocol string) string {
 		net = "mainnet"
 	case GoerliGenesisHash:
 		net = "goerli"
-	case MumbaiGenesisHash:
-		net = "mumbai"
-	case ZenaMainnetGenesisHash:
-		net = "zena-mainnet"
-	case AmoyGenesisHash:
-		net = "amoy"
+	case EireneGenesisHash:
+		net = "eirene"
+	case PaxGenesisHash:
+		net = "pax"
 	case SepoliaGenesisHash:
 		net = "sepolia"
 	default:

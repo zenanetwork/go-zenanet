@@ -45,7 +45,7 @@ jobs:
           echo "Section: base" >> packaging/deb/zena/DEBIAN/control
           echo "Priority: optional" >> packaging/deb/zena/DEBIAN/control
           echo "Architecture: all" >> packaging/deb/zena/DEBIAN/control
-          echo "Maintainer: devops@polygon.technology" >> packaging/deb/zena/DEBIAN/control
+          echo "Maintainer: devops@zenanet.technology" >> packaging/deb/zena/DEBIAN/control
           echo "Description: zena profile package" >> packaging/deb/zena/DEBIAN/control
 
       # Bootnode Profile

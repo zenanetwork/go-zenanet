@@ -7,8 +7,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/stretchr/testify/require"
 
-	"github.com/zenanetwork/go-zenanet/common"
-	"github.com/zenanetwork/go-zenanet/common/hexutil" //nolint:typecheck
+	"github.com/zenanetwork/go-zenanet/common" //nolint:typecheck
 	"github.com/zenanetwork/go-zenanet/core"
 	"github.com/zenanetwork/go-zenanet/core/rawdb"
 	"github.com/zenanetwork/go-zenanet/core/state"
@@ -28,27 +27,27 @@ func TestGenesisContractChange(t *testing.T) {
 			Sprint: map[string]uint64{
 				"0": 10,
 			}, // skip sprint transactions in sprint
-			BlockAlloc: map[string]interface{}{
-				// write as interface since that is how it is decoded in genesis
-				"2": map[string]interface{}{
-					addr0.Hex(): map[string]interface{}{
-						"code":    hexutil.Bytes{0x1, 0x2},
-						"balance": "0",
-					},
-				},
-				"4": map[string]interface{}{
-					addr0.Hex(): map[string]interface{}{
-						"code":    hexutil.Bytes{0x1, 0x3},
-						"balance": "0x1000",
-					},
-				},
-				"6": map[string]interface{}{
-					addr0.Hex(): map[string]interface{}{
-						"code":    hexutil.Bytes{0x1, 0x4},
-						"balance": "0x2000",
-					},
-				},
-			},
+			// BlockAlloc: map[string]interface{}{
+			// 	// write as interface since that is how it is decoded in genesis
+			// 	"2": map[string]interface{}{
+			// 		addr0.Hex(): map[string]interface{}{
+			// 			"code":    hexutil.Bytes{0x1, 0x2},
+			// 			"balance": "0",
+			// 		},
+			// 	},
+			// 	"4": map[string]interface{}{
+			// 		addr0.Hex(): map[string]interface{}{
+			// 			"code":    hexutil.Bytes{0x1, 0x3},
+			// 			"balance": "0x1000",
+			// 		},
+			// 	},
+			// 	"6": map[string]interface{}{
+			// 		addr0.Hex(): map[string]interface{}{
+			// 			"code":    hexutil.Bytes{0x1, 0x4},
+			// 			"balance": "0x2000",
+			// 		},
+			// 	},
+			// },
 		},
 	}
 
@@ -128,7 +127,7 @@ func TestGenesisContractChange(t *testing.T) {
 func TestEncodeSigHeaderJaipur(t *testing.T) {
 	t.Parallel()
 
-	// As part of the EIP-1559 fork in mumbai, an incorrect seal hash
+	// As part of the EIP-1559 fork in eirene, an incorrect seal hash
 	// was used for Zena that did not included the BaseFee. The Jaipur
 	// block is a hard fork to fix that.
 	h := &types.Header{

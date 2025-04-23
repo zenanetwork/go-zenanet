@@ -146,12 +146,12 @@ func loadBaseConfig(ctx *cli.Context) gzenConfig {
 		}
 	}
 
-	if ctx.IsSet(utils.MumbaiFlag.Name) {
-		setDefaultMumbaiGzenConfig(ctx, &cfg)
+	if ctx.IsSet(utils.EireneFlag.Name) {
+		setDefaultEireneGzenConfig(ctx, &cfg)
 	}
 
-	if ctx.IsSet(utils.AmoyFlag.Name) {
-		setDefaultAmoyGzenConfig(ctx, &cfg)
+	if ctx.IsSet(utils.PaxFlag.Name) {
+		setDefaultPaxGzenConfig(ctx, &cfg)
 	}
 
 	if ctx.IsSet(utils.ZenaMainnetFlag.Name) {
@@ -409,7 +409,7 @@ func setAccountManagerBackends(conf *node.Config, am *accounts.Manager, keydir s
 	return nil
 }
 
-func setDefaultMumbaiGzenConfig(ctx *cli.Context, config *gzenConfig) {
+func setDefaultEireneGzenConfig(ctx *cli.Context, config *gzenConfig) {
 	config.Node.P2P.ListenAddr = fmt.Sprintf(":%d", 30303)
 	config.Node.HTTPHost = "0.0.0.0"
 	config.Node.HTTPVirtualHosts = []string{"*"}
@@ -433,7 +433,7 @@ func setDefaultMumbaiGzenConfig(ctx *cli.Context, config *gzenConfig) {
 }
 
 // nolint : wsl
-func setDefaultAmoyGzenConfig(ctx *cli.Context, config *gzenConfig) {
+func setDefaultPaxGzenConfig(ctx *cli.Context, config *gzenConfig) {
 	config.Node.P2P.ListenAddr = fmt.Sprintf(":%d", 30303)
 	config.Node.HTTPHost = "0.0.0.0"
 	config.Node.HTTPVirtualHosts = []string{"*"}

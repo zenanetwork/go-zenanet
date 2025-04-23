@@ -4,24 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"sort"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru"
-	"github.com/holiman/uint256"
 	"golang.org/x/crypto/sha3"
 
 	"github.com/zenanetwork/go-zenanet/accounts"
 	"github.com/zenanetwork/go-zenanet/common"
-	balance_tracing "github.com/zenanetwork/go-zenanet/core/tracing"
 
 	"github.com/zenanetwork/go-zenanet/consensus"
 	"github.com/zenanetwork/go-zenanet/consensus/misc"
@@ -167,10 +163,9 @@ func encodeSigHeader(w io.Writer, header *types.Header, c *params.ZenaConfig) {
 		header.Nonce,
 	}
 
-	if c.IsJaipur(header.Number) {
-		if header.BaseFee != nil {
-			enc = append(enc, header.BaseFee)
-		}
+	// BaseFee가 존재하면 포함합니다
+	if header.BaseFee != nil {
+		enc = append(enc, header.BaseFee)
 	}
 
 	if err := rlp.Encode(w, enc); err != nil {
@@ -277,13 +272,6 @@ func New(
 			return nil, &UnauthorizedSignerError{0, common.Address{}.Bytes()}
 		},
 	})
-
-	// make sure we can decode all the GenesisAlloc in the ZenaConfig.
-	for key, genesisAlloc := range c.config.BlockAlloc {
-		if _, err := decodeGenesisAlloc(genesisAlloc); err != nil {
-			panic(fmt.Sprintf("BUG: Block alloc '%s' in genesis is not correct: %v", key, err))
-		}
-	}
 
 	return c
 }
@@ -847,11 +835,6 @@ func (c *Zena) Finalize(chain consensus.ChainHeaderReader, header *types.Header,
 		state.ZenaConsensusTime = time.Since(start)
 	}
 
-	if err = c.changeContractCodeIfNeeded(headerNumber, state); err != nil {
-		log.Error("Error changing contract code", "error", err)
-		return
-	}
-
 	// No block rewards in PoA, so the state remains as is and uncles are dropped
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 	header.UncleHash = types.CalcUncleHash(nil)
@@ -859,44 +842,6 @@ func (c *Zena) Finalize(chain consensus.ChainHeaderReader, header *types.Header,
 	// Set state sync data to blockchain
 	bc := chain.(*core.BlockChain)
 	bc.SetStateSync(stateSyncData)
-}
-
-func decodeGenesisAlloc(i interface{}) (types.GenesisAlloc, error) {
-	var alloc types.GenesisAlloc
-
-	b, err := json.Marshal(i)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := json.Unmarshal(b, &alloc); err != nil {
-		return nil, err
-	}
-
-	return alloc, nil
-}
-
-func (c *Zena) changeContractCodeIfNeeded(headerNumber uint64, state *state.StateDB) error {
-	for blockNumber, genesisAlloc := range c.config.BlockAlloc {
-		if blockNumber == strconv.FormatUint(headerNumber, 10) {
-			allocs, err := decodeGenesisAlloc(genesisAlloc)
-			if err != nil {
-				return fmt.Errorf("failed to decode genesis alloc: %w", err)
-			}
-
-			for addr, account := range allocs {
-				log.Info("change contract code", "address", addr)
-				state.SetCode(addr, account.Code)
-
-				if state.GetBalance(addr).Cmp(uint256.NewInt(0)) == 0 {
-					// todo: @anshalshukla - check tracing reason
-					state.SetBalance(addr, uint256.NewInt(account.Balance.Uint64()), balance_tracing.BalanceChangeUnspecified)
-				}
-			}
-		}
-	}
-
-	return nil
 }
 
 // FinalizeAndAssemble implements consensus.Engine, ensuring no uncles are set,
@@ -929,11 +874,6 @@ func (c *Zena) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *ty
 				return nil, err
 			}
 		}
-	}
-
-	if err = c.changeContractCodeIfNeeded(headerNumber, state); err != nil {
-		log.Error("Error changing contract code", "error", err)
-		return nil, err
 	}
 
 	// No block rewards in PoA, so the state remains as it is
@@ -1187,23 +1127,13 @@ func (c *Zena) CommitStates(
 		err            error
 	)
 
-	if c.config.IsIndore(header.Number) {
-		// Fetch the LastStateId from contract via current state instance
-		lastStateIDBig, err = c.GenesisContractsClient.LastStateId(state.Copy(), number-1, header.ParentHash)
-		if err != nil {
-			return nil, err
-		}
-
-		stateSyncDelay := c.config.CalculateStateSyncDelay(number)
-		to = time.Unix(int64(header.Time-stateSyncDelay), 0)
-	} else {
-		lastStateIDBig, err = c.GenesisContractsClient.LastStateId(nil, number-1, header.ParentHash)
-		if err != nil {
-			return nil, err
-		}
-
-		to = time.Unix(int64(chain.Chain.GetHeaderByNumber(number-c.config.CalculateSprint(number)).Time), 0)
+	// 메인체인용 간소화된 구현
+	lastStateIDBig, err = c.GenesisContractsClient.LastStateId(nil, number-1, header.ParentHash)
+	if err != nil {
+		return nil, err
 	}
+
+	to = time.Unix(int64(chain.Chain.GetHeaderByNumber(number-c.config.CalculateSprint(number)).Time), 0)
 
 	lastStateID := lastStateIDBig.Uint64()
 	from = lastStateID + 1
@@ -1216,12 +1146,6 @@ func (c *Zena) CommitStates(
 	eventRecords, err := c.IrisClient.StateSyncEvents(context.Background(), from, to.Unix())
 	if err != nil {
 		log.Error("Error occurred when fetching state sync events", "fromID", from, "to", to.Unix(), "err", err)
-	}
-
-	if c.config.OverrideStateSyncRecords != nil {
-		if val, ok := c.config.OverrideStateSyncRecords[strconv.FormatUint(number, 10)]; ok {
-			eventRecords = eventRecords[0:val]
-		}
 	}
 
 	fetchTime := time.Since(fetchStart)

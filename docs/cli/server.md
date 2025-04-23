@@ -1,26 +1,26 @@
 # Server
 
-The `bor server` command runs the Bor client.
+The `zena server` command runs the Bor client.
 
 ## Options
 
-- `bor.devfakeauthor`: Run miner without validator set authorization [dev mode] : Use with '--bor.withoutiris' (default: false)
+- `zena.devfakeauthor`: Run miner without validator set authorization [dev mode] : Use with '--zena.withoutiris' (default: false)
 
-- `bor.iris`: URL of Iris service (default: http://localhost:1317)
+- `zena.iris`: URL of Iris service (default: http://localhost:1317)
 
-- `bor.irisgRPC`: Address of Iris gRPC service
+- `zena.irisgRPC`: Address of Iris gRPC service
 
-- `bor.logs`: Enables bor log retrieval (default: false)
+- `zena.logs`: Enables zena log retrieval (default: false)
 
-- `bor.runiris`: Run Iris service as a child process (default: false)
+- `zena.runiris`: Run Iris service as a child process (default: false)
 
-- `bor.runirisargs`: Arguments to pass to Iris service
+- `zena.runirisargs`: Arguments to pass to Iris service
 
-- `bor.useirisapp`: Use child iris process to fetch data, Only works when bor.runiris is true (default: false)
+- `zena.useirisapp`: Use child iris process to fetch data, Only works when zena.runiris is true (default: false)
 
-- `bor.withoutiris`: Run without Iris service (for testing purpose) (default: false)
+- `zena.withoutiris`: Run without Iris service (for testing purpose) (default: false)
 
-- `chain`: Name of the chain to sync ('amoy', 'mumbai', 'mainnet') or path to a genesis file (default: mainnet)
+- `chain`: Name of the chain to sync ('pax', 'eirene', 'mainnet') or path to a genesis file (default: mainnet)
 
 - `config`: Path to the TOML configuration file
 
@@ -36,7 +36,7 @@ The `bor server` command runs the Bor client.
 
 - `dev.period`: Block period to use in developer mode (0 = mine only if transaction pending) (default: 0)
 
-- `disable-bor-wallet`: Disable the personal wallet endpoints (default: true)
+- `disable-zena-wallet`: Disable the personal wallet endpoints (default: true)
 
 - `eth.requiredblocks`: Comma separated block number-to-hash mappings to require for peering (<number>=<hash>)
 
@@ -158,7 +158,7 @@ The `bor server` command runs the Bor client.
 
 - `http.addr`: HTTP-RPC server listening interface (default: localhost)
 
-- `http.api`: API's offered over the HTTP-RPC interface (default: eth,net,web3,txpool,bor)
+- `http.api`: API's offered over the HTTP-RPC interface (default: eth,net,web3,txpool,zena)
 
 - `http.corsdomain`: Comma separated list of domains from which to accept cross origin requests (browser enforced) (default: localhost)
 

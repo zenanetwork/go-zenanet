@@ -441,12 +441,10 @@ func (g *Genesis) configOrDefault(ghash common.Hash) *params.ChainConfig {
 		return params.SepoliaChainConfig
 	case ghash == params.GoerliGenesisHash:
 		return params.GoerliChainConfig
-	case ghash == params.MumbaiGenesisHash:
-		return params.MumbaiChainConfig
-	case ghash == params.ZenaMainnetGenesisHash:
-		return params.ZenaMainnetChainConfig
-	case ghash == params.AmoyGenesisHash:
-		return params.AmoyChainConfig
+	case ghash == params.EireneGenesisHash:
+		return params.EireneChainConfig
+	case ghash == params.PaxGenesisHash:
+		return params.PaxChainConfig
 	default:
 		return params.AllEthashProtocolChanges
 	}
@@ -614,45 +612,31 @@ func DefaultHoleskyGenesisBlock() *Genesis {
 	}
 }
 
-// DefaultMumbaiGenesisBlock returns the Mumbai network genesis block.
-func DefaultMumbaiGenesisBlock() *Genesis {
+// DefaultEireneGenesisBlock returns the Eirene network genesis block.
+func DefaultEireneGenesisBlock() *Genesis {
 	return &Genesis{
-		Config:     params.MumbaiChainConfig,
+		Config:     params.EireneChainConfig,
 		Nonce:      0,
 		Timestamp:  1558348305,
 		GasLimit:   10000000,
 		Difficulty: big.NewInt(1),
 		Mixhash:    common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000000"),
 		Coinbase:   common.HexToAddress("0x0000000000000000000000000000000000000000"),
-		Alloc:      readPrealloc("allocs/mumbai.json"),
+		Alloc:      readPrealloc("allocs/eirene.json"),
 	}
 }
 
-// DefaultAmoyGenesisBlock returns the Amoy network genesis block.
-func DefaultAmoyGenesisBlock() *Genesis {
+// DefaultPaxGenesisBlock returns the Pax network genesis block.
+func DefaultPaxGenesisBlock() *Genesis {
 	return &Genesis{
-		Config:     params.AmoyChainConfig,
+		Config:     params.PaxChainConfig,
 		Nonce:      0,
 		Timestamp:  1700225065,
 		GasLimit:   10000000,
 		Difficulty: big.NewInt(1),
 		Mixhash:    common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000000"),
 		Coinbase:   common.HexToAddress("0x0000000000000000000000000000000000000000"),
-		Alloc:      readPrealloc("allocs/amoy.json"),
-	}
-}
-
-// DefaultZenaMainnet returns the Zena Mainnet network gensis block.
-func DefaultZenaMainnetGenesisBlock() *Genesis {
-	return &Genesis{
-		Config:     params.ZenaMainnetChainConfig,
-		Nonce:      0,
-		Timestamp:  1590824836,
-		GasLimit:   10000000,
-		Difficulty: big.NewInt(1),
-		Mixhash:    common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000000"),
-		Coinbase:   common.HexToAddress("0x0000000000000000000000000000000000000000"),
-		Alloc:      readPrealloc("allocs/zena_mainnet.json"),
+		Alloc:      readPrealloc("allocs/pax.json"),
 	}
 }
 

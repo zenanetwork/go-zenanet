@@ -67,10 +67,10 @@ builds:
       -s -w -extldflags "-static"
 
 nfpms:
-  - vendor: 0xPolygon
-    homepage: https://polygon.technology
-    maintainer: Polygon Team <team@polygon.technology>
-    description: Polygon Blockchain
+  - vendor: 0xZenanet
+    homepage: https://zenanet.technology
+    maintainer: Zenanet Team <team@zenanet.technology>
+    description: Zenanet Blockchain
     license: GPLv3 LGPLv3
 
     bindir: /usr/local/bin
@@ -94,8 +94,8 @@ nfpms:
       - src: builder/files/genesis-testnet-v4.json
         dst: /etc/zena/genesis-testnet-v4.json
         type: config
-      - src: builder/files/genesis-amoy.json
-        dst: /etc/zena/genesis-amoy.json
+      - src: builder/files/genesis-pax.json
+        dst: /etc/zena/genesis-pax.json
         type: config
       - src: builder/files/config.toml
         dst: /var/lib/zena/config.toml
@@ -109,7 +109,7 @@ snapshot:
 
 dockers:
   - image_templates:
-      - 0xpolygon/{{ .ProjectName }}:{{ .Version }}-amd64
+      - 0xzenanet/{{ .ProjectName }}:{{ .Version }}-amd64
     dockerfile: Dockerfile.release
     use: buildx
     goarch: amd64
@@ -120,7 +120,7 @@ dockers:
     extra_files:
       - builder/files/genesis-mainnet-v1.json
       - builder/files/genesis-testnet-v4.json
-      - builder/files/genesis-amoy.json
+      - builder/files/genesis-pax.json
 
   - image_templates:
       - 0xzena/{{ .ProjectName }}:{{ .Version }}-arm64
@@ -134,7 +134,7 @@ dockers:
     extra_files:
       - builder/files/genesis-mainnet-v1.json
       - builder/files/genesis-testnet-v4.json
-      - builder/files/genesis-amoy.json
+      - builder/files/genesis-pax.json
 
 docker_manifests:
   - name_template: 0xzena/{{ .ProjectName }}:{{ .Version }}
