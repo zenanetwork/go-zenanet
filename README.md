@@ -47,7 +47,7 @@ Post `v0.3.0` release, zena uses a new command line interface (cli). The new-cli
 
 ### Documentation
 
-- The official documentation for the Zenanet PoS chain can be found [here](https://wiki.polygon.technology/docs/pos/getting-started/). It contains all the conceptual and architectural details of the chain along with an operational guide for users running the nodes.
+- The official documentation for the Zenanet PoS chain can be found [here](https://wiki.Zenanet.technology/docs/pos/getting-started/). It contains all the conceptual and architectural details of the chain along with an operational guide for users running the nodes.
 - New release announcements and discussions can be found on our [forum page](https://forum.Zenanet.technology/).
 - Zenanet improvement proposals can be found [here](https://github.com/zenanetwork/Zenanet-Improvement-Proposals/)
 
@@ -57,7 +57,7 @@ Thank you for considering helping out with the source code! We welcome contribut
 
 From the outset, we defined some guidelines to ensure new contributions only ever enhance the project:
 
-- Quality: Code in the Polygon project should meet the style guidelines, with sufficient test-cases, descriptive commit messages, evidence that the contribution does not break any compatibility commitments or cause adverse feature interactions, and evidence of high-quality peer-review. Code must adhere to the official Go [formatting](https://golang.org/doc/effective_go.html#formatting) guidelines (i.e. uses [gofmt](https://golang.org/cmd/gofmt/)).
+- Quality: Code in the Zenanet project should meet the style guidelines, with sufficient test-cases, descriptive commit messages, evidence that the contribution does not break any compatibility commitments or cause adverse feature interactions, and evidence of high-quality peer-review. Code must adhere to the official Go [formatting](https://golang.org/doc/effective_go.html#formatting) guidelines (i.e. uses [gofmt](https://golang.org/cmd/gofmt/)).
 - Testing: Please ensure that the updated code passes all the tests locally before submitting a pull request. In order to run unit tests, run `make test` and to run integration tests, run `make test-integration`.
 - Size: The Zena project’s culture is one of small pull-requests, regularly submitted. The larger a pull-request, the more likely it is that you will be asked to resubmit as a series of self-contained and individually reviewable smaller PRs.
 - Maintainability: If the feature will require ongoing maintenance (e.g. support for a particular brand of database), we may ask you to accept responsibility for maintaining this feature
