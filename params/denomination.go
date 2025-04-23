@@ -21,7 +21,7 @@ package params
 //
 //	new(big.Int).Mul(value, big.NewInt(params.GWei))
 const (
-	Wei   = 1
-	GWei  = 1e9
-	Zen = 1e18
+	Wei  = 1
+	GWei = 1e9
+	Zen  = 1e18
 )
