@@ -314,6 +314,12 @@ func (c *ChainSpanner) CommitSpan(ctx context.Context, irisSpan IrisSpan, state 
 		"id", irisSpan.ID,
 		"startBlock", irisSpan.StartBlock,
 		"endBlock", irisSpan.EndBlock,
+		"validatorCount", len(validators),
+		"producerCount", len(producers),
+		"chainID", irisSpan.ChainID,
+	)
+
+	log.Debug("Span details",
 		"validatorBytes", hex.EncodeToString(validatorBytes),
 		"producerBytes", hex.EncodeToString(producerBytes),
 	)
@@ -335,7 +341,11 @@ func (c *ChainSpanner) CommitSpan(ctx context.Context, irisSpan IrisSpan, state 
 	msg := statefull.GetSystemMessage(c.validatorContractAddress, data)
 
 	// apply message
-	_, err = statefull.ApplyMessage(ctx, msg, state, header, c.chainConfig, chainContext)
+	gasUsed, err := statefull.ApplyMessage(ctx, msg, state, header, c.chainConfig, chainContext)
+
+	if err == nil {
+		log.Info("✅ Layer1 span committed successfully", "gasUsed", gasUsed)
+	}
 
 	return err
 }

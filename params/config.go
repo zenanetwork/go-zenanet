@@ -35,7 +35,7 @@ var (
 	GoerliGenesisHash  = common.HexToHash("0xbf7e331f7f7c1dd2e05159666b3bf8bc7a8a3a9eb1d518969eab529dd9b88c1a")
 	EireneGenesisHash  = common.HexToHash("0x7b66506a9ebdbf30d32b43c5f15a3b1216269a1ec3a75aa3182b86176a2b1ca7")
 	KilnGenesisHash    = common.HexToHash("0x51c7fe41be669f69c45c33a56982cbde405313342d9e2b00d7c91a7b284dd4f8")
-	PaxGenesisHash    = common.HexToHash("0x7202b2b53c5a0836e773e319d18922cc756dd67432f9a1f65352b61f4406c697")
+	PaxGenesisHash     = common.HexToHash("0x7202b2b53c5a0836e773e319d18922cc756dd67432f9a1f65352b61f4406c697")
 )
 
 var (
@@ -557,11 +557,6 @@ type ZenaConfig struct {
 	Sprint            map[string]uint64 `json:"sprint"`            // Epoch length to proposer
 	BackupMultiplier  map[string]uint64 `json:"backupMultiplier"`  // Backup multiplier to determine the wiggle time
 	ValidatorContract string            `json:"validatorContract"` // Validator set contract
-}
-
-// String implements the stringer interface, returning the consensus engine details.
-func (c *ZenaConfig) String() string {
-	return "zena"
 }
 
 func (c *ZenaConfig) CalculateProducerDelay(number uint64) uint64 {
